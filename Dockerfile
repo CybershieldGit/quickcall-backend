@@ -24,7 +24,7 @@ COPY static/ ./static/
 COPY make_call.py cli_test.py ./
 
 # Expose FastAPI server port
-EXPOSE 8000
+EXPOSE 8001
 
 # Run uvicorn server in production mode
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"]

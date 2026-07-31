@@ -5,7 +5,7 @@ load_dotenv()
 
 class Settings:
     PROJECT_NAME: str = "QwikCall - AI Voice Interview Agent"
-    PORT: int = int(os.getenv("PORT", 8000))
+    PORT: int = int(os.getenv("PORT", 8001))
     HOST: str = os.getenv("HOST", "0.0.0.0")
     
     # API Keys
@@ -20,6 +20,6 @@ class Settings:
     TWILIO_PHONE_NUMBER: str = os.getenv("TWILIO_PHONE_NUMBER", "")
     
     # Base public URL for webhooks
-    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8000")
+    BASE_URL: str = os.getenv("BASE_URL", "http://localhost:8001")
 
 settings = Settings()
