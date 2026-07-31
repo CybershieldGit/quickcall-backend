@@ -8,3 +8,4 @@ httpx>=0.27.0
 elevenlabs
 edge-tts>=6.1.10
 twilio
+python-multipart
