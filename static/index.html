@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QwikCall — AI Voice Interview Practice Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-gradient: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --card-border: rgba(255, 255, 255, 0.1);
+            --accent-purple: #8b5cf6;
+            --accent-indigo: #6366f1;
+            --accent-green: #10b981;
+            --accent-red: #ef4444;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            font-family: 'Outfit', sans-serif;
+        }
+
+        body {
+            background: var(--bg-gradient);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow-x: hidden;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            display: grid;
+            grid-template-columns: 360px 1fr;
+            gap: 24px;
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            border: 1px solid var(--card-border);
+            border-radius: 24px;
+            padding: 24px;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Phone Call UI Card */
+        .phone-card {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 20px;
+            padding: 28px 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            text-align: center;
+            position: relative;
+        }
+
+        .avatar-box {
+            position: relative;
+            margin-top: 10px;
+        }
+
+        .avatar {
+            width: 110px;
+            height: 110px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--accent-indigo), var(--accent-purple));
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 44px;
+            box-shadow: 0 0 30px rgba(139, 92, 246, 0.4);
+            transition: all 0.3s ease;
+        }
+
+        .avatar.speaking {
+            animation: pulse-ring 1.5s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.6); }
+            70% { box-shadow: 0 0 0 20px rgba(139, 92, 246, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0); }
+        }
+
+        .agent-name {
+            font-size: 22px;
+            font-weight: 700;
+            margin-top: 16px;
+            color: #ffffff;
+        }
+
+        .call-status {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-top: 6px;
+            font-weight: 500;
+        }
+
+        .badge-live {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: rgba(16, 185, 129, 0.15);
+            color: var(--accent-green);
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-top: 12px;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            background: var(--accent-green);
+            border-radius: 50%;
+            animation: blink 1s infinite alternate;
+        }
+
+        @keyframes blink {
+            from { opacity: 0.3; }
+            to { opacity: 1; }
+        }
+
+        /* Waveform Animation */
+        .waveform {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            height: 36px;
+            margin: 20px 0;
+        }
+
+        .bar {
+            width: 4px;
+            height: 8px;
+            background: var(--accent-purple);
+            border-radius: 4px;
+            transition: height 0.15s ease;
+        }
+
+        .waveform.active .bar {
+            animation: wave 1s infinite ease-in-out alternate;
+        }
+
+        .waveform.active .bar:nth-child(1) { animation-delay: 0.1s; }
+        .waveform.active .bar:nth-child(2) { animation-delay: 0.3s; }
+        .waveform.active .bar:nth-child(3) { animation-delay: 0.2s; }
+        .waveform.active .bar:nth-child(4) { animation-delay: 0.4s; }
+        .waveform.active .bar:nth-child(5) { animation-delay: 0.15s; }
+
+        @keyframes wave {
+            0% { height: 8px; }
+            100% { height: 32px; }
+        }
+
+        .btn-call {
+            width: 100%;
+            padding: 14px;
+            border: none;
+            border-radius: 14px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: all 0.2s ease;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: #ffffff;
+            box-shadow: 0 10px 20px -5px rgba(16, 185, 129, 0.4);
+        }
+
+        .btn-start:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 14px 24px -5px rgba(16, 185, 129, 0.5);
+        }
+
+        .btn-end {
+            background: linear-gradient(135deg, #ef4444, #dc2626);
+            color: #ffffff;
+            box-shadow: 0 10px 20px -5px rgba(239, 68, 68, 0.4);
+        }
+
+        .btn-end:hover {
+            transform: translateY(-2px);
+        }
+
+        /* Transcript Panel */
+        .transcript-panel {
+            display: flex;
+            flex-direction: column;
+            height: 480px;
+        }
+
+        .panel-header {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-history {
+            flex: 1;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            padding-right: 8px;
+        }
+
+        .chat-history::-webkit-scrollbar {
+            width: 6px;
+        }
+        .chat-history::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.15);
+            border-radius: 4px;
+        }
+
+        .msg {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 16px;
+            font-size: 14px;
+            line-height: 1.5;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .msg.agent {
+            align-self: flex-start;
+            background: rgba(99, 102, 241, 0.15);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            color: #e0e7ff;
+            border-top-left-radius: 4px;
+        }
+
+        .msg.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, var(--accent-purple), var(--accent-indigo));
+            color: #ffffff;
+            border-top-right-radius: 4px;
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+        }
+
+        .msg-role {
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 4px;
+            opacity: 0.7;
+        }
+
+        .manual-input-box {
+            margin-top: 14px;
+            display: flex;
+            gap: 8px;
+        }
+
+        .text-input {
+            flex: 1;
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: white;
+            font-size: 14px;
+            outline: none;
+        }
+
+        .text-input:focus {
+            border-color: var(--accent-purple);
+        }
+
+        .btn-send {
+            background: var(--accent-purple);
+            border: none;
+            border-radius: 12px;
+            padding: 0 18px;
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .audio-player {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Phone Call Control Panel -->
+        <div class="phone-card">
+            <div>
+                <span class="badge-live"><span class="dot"></span> READY FOR DEMO</span>
+                <div class="avatar-box">
+                    <div class="avatar" id="agentAvatar">🎙️</div>
+                </div>
+                <div class="agent-name">QwikCall Agent</div>
+                <div class="call-status" id="callStatus">Tap button to start call</div>
+            </div>
+
+            <!-- Animated Audio Waveform -->
+            <div class="waveform" id="waveform">
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+            </div>
+
+            <!-- Call Toggle Button -->
+            <button class="btn-call btn-start" id="btnToggleCall" onclick="toggleCall()">
+                <span>🎙️</span> <span id="btnText">Start Browser Voice Call</span>
+            </button>
+
+            <!-- Outbound Phone Call Trigger UI -->
+            <div style="margin-top: 20px; width: 100%; border-top: 1px solid var(--card-border); padding-top: 16px; text-align: left;">
+                <div style="font-size: 13px; font-weight: 600; color: var(--text-muted); margin-bottom: 8px;">📱 DISPATCH LIVE PHONE CALL</div>
+                <div style="display: flex; gap: 6px;">
+                    <input type="text" id="phoneInput" class="text-input" placeholder="+917022721098" style="padding: 10px 12px; font-size: 13px;" onkeypress="handlePhoneKeyPress(event)" />
+                    <button class="btn-send" id="btnPhoneCall" onclick="triggerPhoneCall()" style="padding: 10px 14px; font-size: 13px; background: linear-gradient(135deg, var(--accent-indigo), var(--accent-purple)); white-space: nowrap;">Call Phone</button>
+                </div>
+                <div id="phoneStatus" style="font-size: 11px; color: var(--text-muted); margin-top: 6px;">Enter verified number & hit Enter to ring phone</div>
+            </div>
+        </div>
+
+        <!-- Live Transcript Chat Panel -->
+        <div class="transcript-panel">
+            <div class="panel-header">
+                <span>Real-Time Interview Transcript</span>
+                <span style="font-size: 12px; font-weight: 400; color: var(--text-muted);" id="qCount">Progress: 0/5</span>
+            </div>
+
+            <div class="chat-history" id="chatHistory">
+                <div class="msg agent">
+                    <div class="msg-role">QwikCall Agent</div>
+                    Click "Start Voice Call" to initiate the AI technical interview demo.
+                </div>
+            </div>
+
+        <!-- Fallback text input -->
+            <div class="manual-input-box">
+                <input type="text" id="userInput" class="text-input" placeholder="Speak into your mic (or type answer here)..." onkeypress="handleKeyPress(event)" disabled />
+                <button class="btn-send" id="btnSend" onclick="sendAnswer()" disabled>Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Hidden audio element for TTS playback -->
+    <audio id="audioPlayer" class="audio-player"></audio>
+
+    <script>
+        let isCallActive = false;
+        let sessionId = null;
+        let isSpeaking = false;
+        
+        // VAD & MediaRecorder variables
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let audioCtx = null;
+        let analyser = null;
+        let micStream = null;
+        let silenceTimer = null;
+        let hasUserSpoken = false;
+
+        async function startAutoRecording() {
+            if (!isCallActive || isSpeaking || isRecording) return;
+
+            try {
+                micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                mediaRecorder = new MediaRecorder(micStream);
+                audioChunks = [];
+
+                // Audio Context VAD Setup
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioCtx.createMediaStreamSource(micStream);
+                analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 512;
+                source.connect(analyser);
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                hasUserSpoken = false;
+
+                mediaRecorder.ondataavailable = event => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    audioChunks = [];
+                    
+                    // Stop tracks & close audio context
+                    if (micStream) micStream.getTracks().forEach(track => track.stop());
+                    if (audioCtx) try { audioCtx.close(); } catch(e){}
+
+                    document.getElementById('callStatus').innerText = "Transcribing voice via Groq Whisper...";
+                    document.getElementById('waveform').classList.add('active');
+
+                    await submitAudioTurn(audioBlob);
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                document.getElementById('callStatus').innerText = "🎙️ Listening to candidate... Speak into your mic!";
+                document.getElementById('waveform').classList.add('active');
+
+                checkSilenceLoop(dataArray);
+
+            } catch (err) {
+                console.error("Auto recording error:", err);
+                document.getElementById('callStatus').innerText = "Mic error. Type answer below.";
+            }
+        }
+
+        function checkSilenceLoop(dataArray) {
+            if (!isRecording || !analyser) return;
+
+            analyser.getByteFrequencyData(dataArray);
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+            }
+            let averageVolume = sum / dataArray.length;
+
+            // Speech volume threshold
+            if (averageVolume > 12) {
+                hasUserSpoken = true;
+                document.getElementById('callStatus').innerText = "🔴 Candidate speaking...";
+                if (silenceTimer) {
+                    clearTimeout(silenceTimer);
+                    silenceTimer = null;
+                }
+            } else if (hasUserSpoken && !silenceTimer) {
+                // User spoke and now there is silence -> stop after 1.4 seconds
+                document.getElementById('callStatus').innerText = "Silence detected... Sending answer";
+                silenceTimer = setTimeout(() => {
+                    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                        mediaRecorder.stop();
+                        isRecording = false;
+                    }
+                }, 750);
+            }
+
+            if (isRecording) {
+                requestAnimationFrame(() => checkSilenceLoop(dataArray));
+            }
+        }
+
+        async function submitAudioTurn(audioBlob) {
+            if (!sessionId || !isCallActive) return;
+
+            const formData = new FormData();
+            formData.append("session_id", sessionId);
+            formData.append("file", audioBlob, "recording.webm");
+
+            try {
+                const res = await fetch('/api/sim/audio_turn', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    throw new Error(`Server status ${res.status}`);
+                }
+
+                const data = await res.json();
+                
+                // Add candidate message
+                addMessage("user", data.user_speech);
+                
+                // Add agent response
+                addMessage("agent", data.response);
+                document.getElementById('qCount').innerText = `Progress: ${data.question_num}/5`;
+
+                await speakText(data.response);
+
+                if (data.is_final) {
+                    setTimeout(() => { endCall(); }, 3000);
+                }
+
+            } catch (err) {
+                console.error("Audio turn error:", err);
+                document.getElementById('callStatus').innerText = "Error transcribing audio.";
+            }
+        }
+
+        async function toggleCall() {
+            if (!isCallActive) {
+                await startCall();
+            } else {
+                endCall();
+            }
+        }
+
+        async function startCall() {
+            try {
+                const res = await fetch('/api/sim/start', { method: 'POST' });
+                const data = await res.json();
+                
+                sessionId = data.session_id;
+                isCallActive = true;
+
+                // UI updates
+                document.getElementById('btnToggleCall').className = "btn-call btn-end";
+                document.getElementById('btnText').innerText = "End Call";
+                document.getElementById('callStatus').innerText = "Connected • In Call";
+                document.getElementById('userInput').disabled = false;
+                document.getElementById('btnSend').disabled = false;
+                document.getElementById('chatHistory').innerHTML = "";
+                document.getElementById('qCount').innerText = "Progress: 0/5";
+
+                // Play greeting
+                addMessage("agent", data.greeting);
+                await speakText(data.greeting);
+
+            } catch (err) {
+                console.error("Start call error:", err);
+                alert("Failed to connect call server.");
+            }
+        }
+
+        function endCall() {
+            isCallActive = false;
+            sessionId = null;
+            if (mediaRecorder && mediaRecorder.state !== "inactive") {
+                try { mediaRecorder.stop(); } catch(e){}
+            }
+            if (micStream) {
+                try { micStream.getTracks().forEach(t => t.stop()); } catch(e){}
+            }
+            if (audioCtx) {
+                try { audioCtx.close(); } catch(e){}
+            }
+            isRecording = false;
+
+            document.getElementById('btnToggleCall').className = "btn-call btn-start";
+            document.getElementById('btnText').innerText = "Start Voice Call";
+            document.getElementById('callStatus').innerText = "Call ended";
+            document.getElementById('userInput').disabled = true;
+            document.getElementById('btnSend').disabled = true;
+            document.getElementById('waveform').classList.remove('active');
+            document.getElementById('agentAvatar').classList.remove('speaking');
+        }
+
+        async function submitTurn(userSpeech) {
+            if (!sessionId || !isCallActive) return;
+
+            document.getElementById('callStatus').innerText = "Agent thinking...";
+            document.getElementById('waveform').classList.add('active');
+
+            try {
+                const res = await fetch('/api/sim/turn', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: sessionId, user_speech: userSpeech })
+                });
+
+                const data = await res.json();
+                addMessage("agent", data.response);
+                document.getElementById('qCount').innerText = `Progress: ${data.question_num}/5`;
+
+                await speakText(data.response);
+
+                if (data.is_final) {
+                    setTimeout(() => { endCall(); }, 3000);
+                }
+
+            } catch (err) {
+                console.error("Turn error:", err);
+                document.getElementById('callStatus').innerText = "Error getting response.";
+            }
+        }
+
+        async function speakText(text) {
+            isSpeaking = true;
+            document.getElementById('agentAvatar').classList.add('speaking');
+            document.getElementById('waveform').classList.add('active');
+            document.getElementById('callStatus').innerText = "Agent speaking...";
+
+            const player = document.getElementById('audioPlayer');
+            player.src = `/api/sim/tts?text=${encodeURIComponent(text)}`;
+            
+            return new Promise((resolve) => {
+                player.onended = () => {
+                    isSpeaking = false;
+                    document.getElementById('agentAvatar').classList.remove('speaking');
+                    document.getElementById('waveform').classList.remove('active');
+                    if (isCallActive) {
+                        startAutoRecording();
+                    }
+                    resolve();
+                };
+                player.onerror = () => {
+                    isSpeaking = false;
+                    document.getElementById('agentAvatar').classList.remove('speaking');
+                    document.getElementById('waveform').classList.remove('active');
+                    if (isCallActive) {
+                        startAutoRecording();
+                    }
+                    resolve();
+                };
+                player.play().catch(e => {
+                    isSpeaking = false;
+                    console.warn("Autoplay audio blocked, resolving:", e);
+                    if (isCallActive) {
+                        startAutoRecording();
+                    }
+                    resolve();
+                });
+            });
+        }
+
+        function startListening() {
+            if (recognition && isCallActive) {
+                try {
+                    recognition.start();
+                    document.getElementById('waveform').classList.add('active');
+                } catch(e) {
+                    console.log("Recognition start info/retry:", e);
+                }
+            }
+        }
+
+        function sendAnswer() {
+            const input = document.getElementById('userInput');
+            const text = input.value.strip ? input.value.trim() : input.value;
+            if (!text) return;
+            
+            input.value = "";
+            addMessage("user", text);
+            submitTurn(text);
+        }
+
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') {
+                sendAnswer();
+            }
+        }
+
+        async function triggerPhoneCall() {
+            const input = document.getElementById('phoneInput');
+            const statusDiv = document.getElementById('phoneStatus');
+            const targetNumber = input.value ? input.value.trim() : '';
+
+            if (!targetNumber) {
+                statusDiv.innerText = "Please enter a valid mobile number (e.g. +919876543210)";
+                statusDiv.style.color = "#ef4444";
+                return;
+            }
+
+            statusDiv.innerText = `Calling ${targetNumber}... Please wait`;
+            statusDiv.style.color = "#6366f1";
+
+            try {
+                const res = await fetch('/api/call/outbound', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ phone_number: targetNumber })
+                });
+
+                const data = await res.json();
+                if (res.ok) {
+                    statusDiv.innerText = `✅ Calling ${targetNumber}! Answer your phone.`;
+                    statusDiv.style.color = "#10b981";
+                } else {
+                    statusDiv.innerText = `❌ Error: ${data.detail || "Failed to initiate call"}`;
+                    statusDiv.style.color = "#ef4444";
+                }
+            } catch (err) {
+                console.error("Outbound call error:", err);
+                statusDiv.innerText = "❌ Network error initiating phone call.";
+                statusDiv.style.color = "#ef4444";
+            }
+        }
+
+        function handlePhoneKeyPress(e) {
+            if (e.key === 'Enter') {
+                triggerPhoneCall();
+            }
+        }
+
+        function addMessage(role, text) {
+            const history = document.getElementById('chatHistory');
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `msg ${role}`;
+
+            const roleName = role === 'agent' ? 'QwikCall Agent' : 'Candidate';
+            msgDiv.innerHTML = `<div class="msg-role">${roleName}</div>${text}`;
+
+            history.appendChild(msgDiv);
+            history.scrollTop = history.scrollHeight;
+        }
+    </script>
+</body>
+</html>
