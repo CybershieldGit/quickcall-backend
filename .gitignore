@@ -1,7 +1,17 @@
-# Environment variables & secrets
+# Environment variables & secrets (CRITICAL)
 .env
 .env.*
 !.env.example
+
+# Local SQLite databases & temporary DB dumps
+*.db
+*.sqlite
+*.sqlite3
+qwickcall.db
+
+# Logs & SIP traces
+*.log
+sip_debug.log
 
 # Python bytecode & cache
 __pycache__/
@@ -37,14 +47,18 @@ venv.bak/
 .coverage
 htmlcov/
 
-# Logs & Audio files
-*.log
+# Scratch & temporary runtime audio recordings
+scratch/
+temp_audio/
 *.webm
 *.mp3
 *.wav
+*.pcm
+*.onnx
 
-# IDE & OS files
+# IDE & Operating System artifacts
 .vscode/
 .idea/
 .DS_Store
+._*
 Thumbs.db
