@@ -5,6 +5,7 @@ registers the SIP extension with Digest Authentication,
 answers incoming calls, and bridges WebRTC audio with QwickCall's AI VoiceAgent pipeline.
 """
 import os
+import re
 import ssl
 import json
 import uuid
@@ -13,8 +14,9 @@ import fractions
 import base64
 import asyncio
 import traceback
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Set
 import websockets
+
 
 from aiortc import RTCPeerConnection, RTCSessionDescription, AudioStreamTrack, RTCRtpSender
 from aiortc.mediastreams import MediaStreamError
@@ -373,6 +375,9 @@ class AsteriskSipClient:
                 # 180 Ringing / 183 Session Progress (Early media)
                 elif msg.status_code in (180, 183):
                     _log_sip(f"[AsteriskSIP] 📞 Destination phone is ringing for call {call_id} ({msg.status_code} {msg.reason_phrase})")
+                    early_evt = ob.get("early_media_event")
+                    if early_evt and not early_evt.is_set():
+                        early_evt.set()
                     if msg.body and not pc.remoteDescription:
                         try:
                             await pc.setRemoteDescription(RTCSessionDescription(sdp=msg.body, type="answer"))
@@ -383,9 +388,13 @@ class AsteriskSipClient:
                 # 200 OK (Call Answered!)
                 elif msg.status_code == 200 and "INVITE" in cseq_str:
                     _log_sip(f"[AsteriskSIP] ✅ Customer answered outbound call {call_id}!")
+                    early_evt = ob.get("early_media_event")
+                    if early_evt and not early_evt.is_set():
+                        early_evt.set()
                     ans_evt = ob.get("answered_event")
                     if ans_evt and not ans_evt.is_set():
                         ans_evt.set()
+
 
                     if msg.body:
                         try:
@@ -423,6 +432,10 @@ class AsteriskSipClient:
                 # 4xx / 5xx / 6xx (Call Failed / Rejected / Busy)
                 elif msg.status_code >= 400:
                     _log_sip(f"[AsteriskSIP] ❌ Outbound call {call_id} failed with status {msg.status_code}: {msg.reason_phrase}")
+                    ob["failure_error"] = f"{msg.status_code} {msg.reason_phrase}"
+                    early_evt = ob.get("early_media_event")
+                    if early_evt and not early_evt.is_set():
+                        early_evt.set()
                     ans_evt = ob.get("answered_event")
                     if ans_evt and not ans_evt.is_set():
                         ans_evt.set()
@@ -1027,11 +1040,27 @@ class AsteriskSipClient:
             raise RuntimeError(f"RP Digital Asterisk client ({self.username}) is not currently registered.")
 
         clean_target = target_phone.strip().replace(" ", "").replace("-", "")
-        # Dial target: standard 10-digit number or without leading plus
-        dial_target = clean_target.lstrip("+")
+        digits = re.sub(r"\D", "", clean_target)
+        # Indian PSTN carrier trunks in Asterisk PBX match 0 + 10 digits (e.g. 09630729848)
+        if digits.startswith("91") and len(digits) == 12:
+            phone_10 = digits[2:]
+            dial_target = f"0{phone_10}"
+            clean_target = f"+91{phone_10}"
+        elif digits.startswith("0") and len(digits) == 11:
+            phone_10 = digits[1:]
+            dial_target = f"0{phone_10}"
+            clean_target = f"+91{phone_10}"
+        elif len(digits) == 10:
+            phone_10 = digits
+            dial_target = f"0{phone_10}"
+            clean_target = f"+91{phone_10}"
+        else:
+            dial_target = clean_target.lstrip("+")
+
         call_id = f"sip_out_{uuid.uuid4().hex[:12]}"
         from_tag = uuid.uuid4().hex[:8]
         answered_event = asyncio.Event()
+        early_media_event = asyncio.Event()
 
         _log_sip(f"\n📞 [AsteriskSIP] Placing Outbound Call to {clean_target} (dial: {dial_target}) via RP Digital DID {self.did_number or self.username} [Call-ID: {call_id}]")
 
@@ -1088,6 +1117,8 @@ class AsteriskSipClient:
             "from_tag": from_tag,
             "cseq": 1,
             "answered_event": answered_event,
+            "early_media_event": early_media_event,
+            "failure_error": None,
             "created_at": time.time()
         }
 
@@ -1104,6 +1135,16 @@ class AsteriskSipClient:
         )
         await self.ws.send(invite_msg)
         _log_sip(f"[AsteriskSIP] Sent initial SIP INVITE for {dial_target} (Call-ID: {call_id})")
+
+        # Wait briefly (up to 1.2s) to detect if Asterisk immediately rejects the call (e.g. 404/403/503)
+        try:
+            await asyncio.wait_for(early_media_event.wait(), timeout=1.2)
+        except asyncio.TimeoutError:
+            pass
+
+        if self.outbound_calls.get(call_id, {}).get("failure_error"):
+            err_msg = self.outbound_calls[call_id]["failure_error"]
+            raise RuntimeError(f"Asterisk rejected call to {dial_target}: {err_msg}")
 
         return {
             "call_sid": call_id,

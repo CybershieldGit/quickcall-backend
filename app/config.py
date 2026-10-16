@@ -81,7 +81,7 @@ class Settings:
             return env_base
         try:
             import urllib.request, json
-            with urllib.request.urlopen("http://127.0.0.1:20241/quicktunnel", timeout=0.8) as resp:
+            with urllib.request.urlopen("http://127.0.0.1:20241/quicktunnel", timeout=0.1) as resp:
                 data = json.loads(resp.read().decode())
                 hostname = data.get("hostname")
                 if hostname:
@@ -103,6 +103,7 @@ class Settings:
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "mock")  # mock, meta, twilio
     WHATSAPP_META_TOKEN: str = os.getenv("WHATSAPP_META_TOKEN", "")
     WHATSAPP_PHONE_NUMBER_ID: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+    WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "qwickcall_webhook_token")
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     TWILIO_WHATSAPP_FROM: str = os.getenv("TWILIO_WHATSAPP_FROM", "+14155238886")

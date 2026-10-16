@@ -5,7 +5,7 @@ Consolidates Telephony WebSockets, Conversational Chat, Portals, Analytics & Sim
 from fastapi import APIRouter
 
 from app.api.v1.telephony import exotel_voice, exotel_stream, sip_stream, outbound
-from app.api.v1.chat import chat_router
+from app.api.v1.chat import chat_router, whatsapp_webhook
 from app.api.v1.portals import tenant_portal, admin_portal, reseller_portal
 from app.api.v1.analytics import analytics
 from app.api.v1.simulator import simulator
@@ -18,8 +18,9 @@ api_router.include_router(exotel_stream.router)
 api_router.include_router(sip_stream.router)
 api_router.include_router(outbound.router)
 
-# 2. Conversational Chat Agent (Web & WhatsApp)
+# 2. Conversational Chat Agent & WhatsApp Webhook
 api_router.include_router(chat_router.router)
+api_router.include_router(whatsapp_webhook.router)
 
 # 3. Management & Partner Portals
 api_router.include_router(tenant_portal.router)

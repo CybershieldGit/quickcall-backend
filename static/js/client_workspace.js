@@ -1,5 +1,5 @@
 function getTenantToken() {
-  return localStorage.getItem('qwickcall_tenant_token_' + activeTenantId) || localStorage.getItem('qwickcall_admin_token') || '';
+  return localStorage.getItem('qwickcall_tenant_token') || localStorage.getItem('qwickcall_tenant_token_' + activeTenantId) || localStorage.getItem('qwickcall_admin_token') || '';
 }
 
 function tenantFetch(url, options = {}) {
@@ -11,6 +11,132 @@ function tenantFetch(url, options = {}) {
     headers['Authorization'] = `Bearer ${token}`;
   }
   return fetch(url, Object.assign({}, options, { headers }));
+}
+
+function checkTenantAuth() {
+  const overlay = document.getElementById('tenant-login-overlay');
+  const token = localStorage.getItem('qwickcall_tenant_token');
+  const savedTid = localStorage.getItem('qwickcall_tenant_id');
+
+  if (!token || !savedTid || savedTid === 'None' || savedTid === 'none') {
+    if (overlay) {
+      overlay.style.display = 'flex';
+      overlay.classList.add('active');
+    }
+    window.location.href = '/tenant/login';
+    return false;
+  }
+
+  activeTenantId = savedTid;
+  if (overlay) {
+    overlay.style.display = 'none';
+    overlay.classList.remove('active');
+  }
+  return true;
+}
+
+function togglePasswordVisibility(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (btn) btn.innerText = '🙈';
+  } else {
+    input.type = 'password';
+    if (btn) btn.innerText = '👁️';
+  }
+}
+
+function autofillTenantDemo() {
+  const u = document.getElementById('tenant-login-user');
+  const p = document.getElementById('tenant-login-pass');
+  if (u) u.value = 'idigitalstudies';
+  if (p) p.value = 'tenant123';
+}
+
+async function submitTenantLogin(e) {
+  if (e) e.preventDefault();
+  const userEl = document.getElementById('tenant-login-user');
+  const passEl = document.getElementById('tenant-login-pass');
+  const errEl = document.getElementById('tenant-login-error');
+  const btn = document.getElementById('tenant-login-btn');
+
+  const username = userEl ? userEl.value.trim() : '';
+  const password = passEl ? passEl.value : '';
+
+  if (!username || !password) {
+    if (errEl) {
+      errEl.innerText = 'Please provide both Tenant ID / Email and password.';
+      errEl.style.display = 'block';
+    }
+    return;
+  }
+
+  if (errEl) errEl.style.display = 'none';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Verifying credentials... ⏳';
+  }
+
+  try {
+    const res = await fetch('/api/v1/tenant/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const data = await res.json();
+
+    if (res.ok && data.status === 'success' && data.token) {
+      localStorage.setItem('qwickcall_tenant_token', data.token);
+      localStorage.setItem('qwickcall_tenant_id', data.tenant.tenant_id);
+      localStorage.setItem('qwickcall_tenant_profile', JSON.stringify(data.tenant));
+
+      activeTenantId = data.tenant.tenant_id;
+
+      const overlay = document.getElementById('tenant-login-overlay');
+      if (overlay) {
+        overlay.style.display = 'none';
+        overlay.classList.remove('active');
+      }
+
+      showToast(`✓ Welcome, ${data.tenant.business_name}!`);
+      loadClientDashboard(activeTenantId);
+    } else {
+      const msg = data.detail || data.message || 'Invalid credentials. Password is managed by SuperAdmin.';
+      if (errEl) {
+        errEl.innerText = msg;
+        errEl.style.display = 'block';
+      }
+      showToast(msg, false);
+    }
+  } catch (err) {
+    if (errEl) {
+      errEl.innerText = 'Network connection error: ' + err.message;
+      errEl.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = 'Sign In to Workspace 🚀';
+    }
+  }
+}
+
+function logoutTenant() {
+  try {
+    localStorage.removeItem('qwickcall_tenant_token');
+    localStorage.removeItem('qwickcall_tenant_id');
+    localStorage.removeItem('qwickcall_tenant_profile');
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith('qwickcall_tenant') || k.includes('tenant_token'))) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch (e) {
+    console.error('Logout cleanup error:', e);
+  }
+  window.location.replace('/tenant/login');
 }
 
 /**
@@ -33,6 +159,11 @@ function initClientWaveform() {
 }
 
 async function loadTenantsList() {
+  // If not authenticated, ensure login gateway is shown and stop
+  if (!checkTenantAuth()) {
+    return;
+  }
+
   try {
     const res = await fetch('/api/sim/tenants');
     if (res.ok) {
@@ -50,19 +181,34 @@ async function loadTenantsList() {
             switcher.appendChild(opt);
           });
           if (!availableTenants.some(t => t.tenant_id === activeTenantId)) {
-            activeTenantId = availableTenants[0].tenant_id;
-            switcher.value = activeTenantId;
+            // Keep activeTenantId as logged in
+            const opt = document.createElement('option');
+            opt.value = activeTenantId;
+            opt.innerText = activeTenantId;
+            opt.selected = true;
+            switcher.appendChild(opt);
           }
+          switcher.value = activeTenantId;
           loadClientDashboard(activeTenantId);
         } else {
-          switcher.innerHTML = '<option value="">-- No Clients Onboarded --</option>';
-          activeTenantId = '';
-          showEmptyClientDashboard();
+          loadClientDashboard(activeTenantId);
         }
+      } else {
+        loadClientDashboard(activeTenantId);
       }
     }
   } catch (e) {
     console.warn('Error loading tenants list:', e);
+    if (activeTenantId) loadClientDashboard(activeTenantId);
+  }
+}
+
+// Auto-check on script load
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkTenantAuth);
+  } else {
+    checkTenantAuth();
   }
 }
 
@@ -154,6 +300,39 @@ async function loadClientDashboard(tenantId) {
 
       const mnTitle = document.getElementById('mn-tenant-name');
       if (mnTitle) mnTitle.innerText = `${data.business_name} (${data.tenant_id})`;
+
+      // Render Talktime Recharge Balance
+      const elWalletVal = document.getElementById('client-wallet-val');
+      const elTalktimeEst = document.getElementById('client-talktime-est');
+      const elWalletStatus = document.getElementById('client-wallet-status');
+      const elRechargeBadge = document.getElementById('client-recharge-badge');
+
+      const wallet = Number(data.wallet_balance != null ? data.wallet_balance : 500);
+      const rate = Number(data.rate_per_min != null ? data.rate_per_min : 5.0);
+      const minsLeft = rate > 0 ? (wallet / rate).toFixed(0) : "0";
+
+      if (elWalletVal) elWalletVal.innerText = `₹${wallet.toFixed(2)}`;
+      if (elTalktimeEst) elTalktimeEst.innerText = `(~${minsLeft} mins @ ₹${rate.toFixed(2)}/min)`;
+
+      if (wallet < 20) {
+        if (elRechargeBadge) {
+          elRechargeBadge.style.background = 'rgba(239, 68, 68, 0.12)';
+          elRechargeBadge.style.borderColor = 'rgba(239, 68, 68, 0.35)';
+          elRechargeBadge.style.color = '#991b1b';
+        }
+        if (elWalletStatus) {
+          elWalletStatus.innerHTML = '<span class="badge badge-rose" style="font-size:0.75rem; padding:3px 8px;">⚠️ Low Balance — Top-up Needed</span>';
+        }
+      } else {
+        if (elRechargeBadge) {
+          elRechargeBadge.style.background = 'rgba(16, 185, 129, 0.12)';
+          elRechargeBadge.style.borderColor = 'rgba(16, 185, 129, 0.35)';
+          elRechargeBadge.style.color = '#065f46';
+        }
+        if (elWalletStatus) {
+          elWalletStatus.innerHTML = '<span class="badge badge-emerald" style="font-size:0.75rem; padding:3px 8px;">✓ Active Recharge</span>';
+        }
+      }
 
       renderClientAgents(data);
     }
@@ -836,6 +1015,105 @@ async function triggerClientPhoneCall() {
     }
   }
 }
+
+// -----------------------------------------------------------------------------
+// Quick Test Call Modal Controller
+// -----------------------------------------------------------------------------
+function openTestCallModal() {
+  const modal = document.getElementById('test-call-modal');
+  if (modal) {
+    const tenantName = document.getElementById('client-biz-name')?.innerText || 'Active Tenant';
+    const numDisplay = document.getElementById('modal-test-call-tenant-name');
+    if (numDisplay) numDisplay.innerText = tenantName;
+
+    const labPhone = document.getElementById('client-phone-input')?.value;
+    const modalInput = document.getElementById('modal-test-phone-input');
+    if (modalInput && labPhone) modalInput.value = labPhone;
+
+    const statusEl = document.getElementById('modal-test-call-status');
+    if (statusEl) statusEl.style.display = 'none';
+
+    modal.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  }
+}
+
+function closeTestCallModal() {
+  const modal = document.getElementById('test-call-modal');
+  if (modal) {
+    modal.classList.remove('active');
+    document.body.style.overflow = '';
+  }
+}
+
+async function triggerModalTestCall() {
+  const phoneInput = document.getElementById('modal-test-phone-input');
+  const toNum = phoneInput ? phoneInput.value.trim() : '';
+  if (!toNum) {
+    showToast('Please enter your mobile phone number', false);
+    return;
+  }
+
+  const labPhone = document.getElementById('client-phone-input');
+  if (labPhone) labPhone.value = toNum;
+
+  const btn = document.getElementById('modal-test-call-submit-btn');
+  const origBtnText = btn ? btn.innerHTML : '📞 Call My Phone Now';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '⏳ Dialing Mobile Gateway...';
+  }
+
+  const statusEl = document.getElementById('modal-test-call-status');
+  if (statusEl) {
+    statusEl.style.display = 'block';
+    statusEl.style.background = 'rgba(99,102,241,0.15)';
+    statusEl.style.color = '#A5B4FC';
+    statusEl.innerText = `Dispatching AI telephone call to ${toNum}...`;
+  }
+
+  try {
+    const res = await tenantFetch('/api/v1/outbound/make-call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: toNum, tenant_id: activeTenantId })
+    });
+    const data = await res.json();
+    if (res.ok) {
+      showToast(`✓ Call dispatched to ${toNum}!`);
+      if (statusEl) {
+        statusEl.style.background = 'rgba(16,185,129,0.15)';
+        statusEl.style.color = 'var(--emerald)';
+        statusEl.innerHTML = `✓ <strong>Call Initiated!</strong> Call SID: <code>${escapeHtml(data.call_sid || 'sip_call')}</code><br/>Your phone will ring in 3 seconds. Pick up to speak with the AI voicebot live!`;
+      }
+      setTimeout(() => loadClientRecentCalls(activeTenantId), 6000);
+    } else {
+      const errMsg = data.detail || data.message || 'Call dispatch failed';
+      showToast(errMsg, false);
+      if (statusEl) {
+        statusEl.style.background = 'rgba(239,68,68,0.15)';
+        statusEl.style.color = 'var(--rose)';
+        statusEl.innerText = `✗ Failed: ${errMsg}`;
+      }
+    }
+  } catch (e) {
+    showToast(e.message, false);
+    if (statusEl) {
+      statusEl.style.background = 'rgba(239,68,68,0.15)';
+      statusEl.style.color = 'var(--rose)';
+      statusEl.innerText = `✗ Error: ${e.message}`;
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = origBtnText;
+    }
+  }
+}
+
+window.openTestCallModal = openTestCallModal;
+window.closeTestCallModal = closeTestCallModal;
+window.triggerModalTestCall = triggerModalTestCall;
 
 let currentChatSessionId = null;
 

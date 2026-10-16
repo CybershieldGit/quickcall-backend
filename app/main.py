@@ -11,6 +11,7 @@ from app.api import api_router
 from app.api.v1.chat import chat_router
 from app.api.v1.simulator import simulator
 from app.api.v1.telephony import outbound
+from app.api.v1.portals import tenant_portal, admin_portal, reseller_portal
 
 logger = logging.getLogger("qwickcall.main")
 
@@ -42,7 +43,7 @@ else:
 async def add_no_cache_headers(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path in ("/", "/index.html") or path.startswith(("/css", "/js", "/static")):
+    if path in ("/", "/index.html", "/admin", "/admin/", "/reseller", "/reseller/", "/tenant", "/tenant/", "/client", "/client/", "/simulator", "/simulator/", "/docs-portal", "/docs-portal/", "/chats", "/chat", "/whatsapp", "/whatsapp-studio") or path.startswith(("/css", "/js", "/static", "/chats", "/chat", "/admin", "/reseller", "/tenant", "/client", "/simulator")):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
@@ -108,6 +109,12 @@ app.post("/api/v1/simulator/turn", tags=["Web Simulator"])(simulator.text_turn)
 app.post("/api/v1/outbound/make-call", tags=["Outbound Calls"])(outbound.make_outbound_call)
 app.post("/api/chat", tags=["Chat Agent"])(chat_router.send_chat_message)
 app.post("/api/chat/message", tags=["Chat Agent"])(chat_router.send_chat_message)
+
+# Direct login POST aliases for separate portal endpoints
+app.post("/tenant/login", tags=["Tenant SaaS Portal"])(tenant_portal.login_tenant)
+app.post("/client/login", tags=["Tenant SaaS Portal"])(tenant_portal.login_tenant)
+app.post("/reseller/login", tags=["Reseller Partner Portal"])(reseller_portal.reseller_login)
+app.post("/admin/login", tags=["SuperAdmin & Owner Portal"])(admin_portal.admin_login)
 
 async def _background_keepalive():
     """Keeps Deepgram STT and TTS TLS connections hot every 15 seconds."""
@@ -251,14 +258,76 @@ async def health_check():
         "database_url": settings.DATABASE_URL[:40] + "..."
     }
 
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Pragma": "no-cache",
+    "Expires": "0"
+}
+
+def serve_html(filepath: str):
+    if os.path.exists(filepath):
+        return FileResponse(filepath, headers=NO_CACHE_HEADERS)
+    return FileResponse(os.path.join(static_dir, "index.html"), headers=NO_CACHE_HEADERS)
+
+# Separate Portal Login UI Routes
+@app.api_route("/tenant/login", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/tenant/login/", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/client/login", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/client/login/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_tenant_login():
+    return serve_html(os.path.join(static_dir, "login.html"))
+
+@app.api_route("/reseller/login", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/reseller/login/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_reseller_login():
+    return serve_html(os.path.join(static_dir, "login.html"))
+
+@app.api_route("/admin/login", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/admin/login/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_admin_login():
+    return serve_html(os.path.join(static_dir, "login.html"))
+
+@app.api_route("/login", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/login/", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/signin", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/auth", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_login_portal():
+    return serve_html(os.path.join(static_dir, "login.html"))
+
+@app.api_route("/admin", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/admin/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_admin_portal():
+    return serve_html(os.path.join(static_dir, "admin.html"))
+
+@app.api_route("/reseller", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/reseller/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_reseller_portal():
+    return serve_html(os.path.join(static_dir, "reseller.html"))
+
 @app.api_route("/", methods=["GET", "HEAD"], tags=["UI"])
-async def serve_ui():
+@app.api_route("/tenant", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/tenant/", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/client", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/client/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_tenant_workspace():
+    return serve_html(os.path.join(static_dir, "tenant.html"))
+
+@app.api_route("/simulator", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/simulator/", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/docs-portal", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/docs-portal/", methods=["GET", "HEAD"], tags=["UI"])
+async def serve_sim_and_docs():
     index_file = os.path.join(static_dir, "index.html")
     if os.path.exists(index_file):
         return FileResponse(index_file)
-    return {"message": "Welcome to Enterprise Voice Agent Platform v2.1 (Exotel Telephony)"}
+    return {"message": "Voicebot Platform Sandbox"}
 
+@app.api_route("/chats", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/chats/", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/chat", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/chat/", methods=["GET", "HEAD"], tags=["UI"])
 @app.api_route("/whatsapp", methods=["GET", "HEAD"], tags=["UI"])
+@app.api_route("/whatsapp/", methods=["GET", "HEAD"], tags=["UI"])
 @app.api_route("/whatsapp-studio", methods=["GET", "HEAD"], tags=["UI"])
 async def serve_whatsapp_studio():
     wa_file = os.path.join(static_dir, "whatsapp.html")

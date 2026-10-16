@@ -41,6 +41,7 @@ def init_database():
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS reseller_id VARCHAR(64);
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS rate_per_min FLOAT DEFAULT 5.0;
                 ALTER TABLE tenants ADD COLUMN IF NOT EXISTS wallet_balance FLOAT DEFAULT 500.0;
+                ALTER TABLE tenants ADD COLUMN IF NOT EXISTS password_hash VARCHAR(255);
             """))
             conn.commit()
         print("✅ Schema migrations applied for agents, calls, and tenants tables.")

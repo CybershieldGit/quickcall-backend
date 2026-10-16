@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>QwickCall AI — Voice Platform Onboarding, Reseller & Client Workspace</title>
+<title>QwickCall AI — Tenant Client Workspace</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
@@ -22,48 +22,70 @@
   <!-- LEFT SIDEBAR NAVIGATION -->
   <aside class="app-sidebar">
     <!-- BRAND / LOGO -->
-    <div class="sidebar-brand" onclick="switchPanel('client')">
+    <a href="/tenant" class="sidebar-brand" style="text-decoration: none; color: inherit;" onclick="event.preventDefault(); switchPanel('client')">
       <div class="sidebar-brand-icon">⚡</div>
       <div class="sidebar-brand-info">
         <div class="sidebar-brand-title">QwickCall <span style="color: var(--brown);">AI</span></div>
         <div class="sidebar-brand-tagline">Autonomous Voice Platform</div>
       </div>
-    </div>
+    </a>
 
     <!-- SIDEBAR NAVIGATIONAL OPTIONS -->
     <nav class="sidebar-nav">
-      <div class="sidebar-nav-heading">WORKSPACE & VOICE</div>
-      <button id="tab-btn-client" class="sidebar-nav-item panel-tab-btn active" onclick="switchPanel('client')">
-        <span class="nav-item-icon">🏢</span>
-        <span class="nav-item-text">Client Workspace</span>
+      <div class="sidebar-nav-heading">WORKSPACE SECTIONS</div>
+      <a href="#overview" data-subtab="all" class="sidebar-nav-item active" onclick="event.preventDefault(); switchClientSubTab('all')">
+        <span class="nav-item-icon">📊</span>
+        <span class="nav-item-text">All-In-One Overview</span>
         <span class="nav-item-badge">Active</span>
-      </button>
-      <button id="tab-btn-showcase" class="sidebar-nav-item panel-tab-btn" onclick="switchPanel('showcase')">
-        <span class="nav-item-icon">⚡</span>
-        <span class="nav-item-text">Voicebot Simulator</span>
-      </button>
-      <button id="tab-btn-whatsapp" class="sidebar-nav-item panel-tab-btn" onclick="switchPanel('whatsapp')">
+      </a>
+      <a href="#agents" data-subtab="agents" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('agents')">
+        <span class="nav-item-icon">🤖</span>
+        <span class="nav-item-text">AI Agents & DIDs</span>
+      </a>
+      <a href="#telemetry" data-subtab="telemetry" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('telemetry')">
+        <span class="nav-item-icon">📈</span>
+        <span class="nav-item-text">Telemetry & KPIs</span>
+      </a>
+      <a href="#leads" data-subtab="leads" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('leads')">
+        <span class="nav-item-icon">🎯</span>
+        <span class="nav-item-text">Leads CRM Pipeline</span>
+      </a>
+      <a href="#calls" data-subtab="calls" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('calls')">
+        <span class="nav-item-icon">📞</span>
+        <span class="nav-item-text">Calls & Transcripts</span>
+      </a>
+      <a href="#lab" data-subtab="lab" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('lab')">
+        <span class="nav-item-icon">📞</span>
+        <span class="nav-item-text">Test Call & Lab</span>
+      </a>
+      <a href="#knowledge" data-subtab="knowledge" class="sidebar-nav-item" onclick="event.preventDefault(); switchClientSubTab('knowledge')">
+        <span class="nav-item-icon">📚</span>
+        <span class="nav-item-text">Knowledge Base & RAG</span>
+      </a>
+
+      <div class="sidebar-nav-heading">CHANNELS & TESTING</div>
+      <a href="/chats" class="sidebar-nav-item" target="_blank">
         <span class="nav-item-icon">💬</span>
         <span class="nav-item-text">WhatsApp AI Studio</span>
-      </button>
+      </a>
+      <a href="/simulator" id="tab-btn-showcase" class="sidebar-nav-item panel-tab-btn" onclick="event.preventDefault(); switchPanel('showcase')">
+        <span class="nav-item-icon">⚡</span>
+        <span class="nav-item-text">Voicebot Simulator</span>
+      </a>
 
-      <div class="sidebar-nav-heading">COMMERCIAL & SYSTEM</div>
-      <button id="tab-btn-reseller" class="sidebar-nav-item panel-tab-btn" onclick="switchPanel('reseller')">
-        <span class="nav-item-icon">🤝</span>
-        <span class="nav-item-text">Reseller Agency</span>
-      </button>
-      <button id="tab-btn-admin" class="sidebar-nav-item panel-tab-btn" onclick="switchPanel('admin')">
-        <span class="nav-item-icon">👑</span>
-        <span class="nav-item-text">SuperAdmin Hub</span>
-      </button>
+      <div class="sidebar-nav-heading">RESOURCES & GUIDES</div>
+      <a href="/docs-portal" id="tab-btn-docs" class="sidebar-nav-item panel-tab-btn" onclick="event.preventDefault(); switchPanel('docs')">
+        <span class="nav-item-icon">📖</span>
+        <span class="nav-item-text">Documentation</span>
+      </a>
 
       <div class="sidebar-nav-heading">QUICK ACTIONS</div>
-      <button type="button" class="sidebar-action-item" onclick="openOnboardingWizard()">
-        <span class="nav-item-icon">🚀</span>
-        <span class="nav-item-text">Onboard Client Wizard</span>
+      <button type="button" class="sidebar-action-item" onclick="openTestCallModal()" style="border-left: 3px solid var(--emerald); font-weight: 700;">
+        <span class="nav-item-icon">📞</span>
+        <span class="nav-item-text" style="color: var(--emerald);">Test Phone Call</span>
       </button>
       <button type="button" class="sidebar-action-item" onclick="openManageNumbersModal()">
-        <span class="nav-item-icon">📞</span>
+        <span class="nav-item-icon">⚙️</span>
         <span class="nav-item-text">Telephony DIDs</span>
       </button>
       <button type="button" class="sidebar-action-item" onclick="openAddLeadModal()">
@@ -114,9 +136,12 @@
         </div>
       </div>
 
-      <div style="display: flex; align-items: center; gap: 12px;">
-        <button class="btn btn-primary btn-sm" onclick="openOnboardingWizard()" style="padding: 7px 16px; font-weight: 700;">
-          + Onboard Client 🚀
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <button class="btn btn-emerald btn-sm" onclick="openTestCallModal()" style="padding: 7px 16px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; box-shadow: 0 0 12px rgba(16,185,129,0.3);">
+          <span>📞</span> Test Call
+        </button>
+        <button class="btn btn-primary btn-sm" onclick="openAddLeadModal()" style="padding: 7px 16px; font-weight: 700;">
+          + New Sales Lead 📝
         </button>
       </div>
     </header>
@@ -129,24 +154,16 @@
        ======================================================================== -->
   <div id="panel-admin" class="panel">
     
-    <!-- SUPERADMIN FEATURE HERO -->
-    <div class="feature-hero">
-      <div class="feature-hero-content">
-        <div class="feature-hero-icon" style="background: rgba(245, 158, 11, 0.15); border-color: rgba(245, 158, 11, 0.3);">👑</div>
-        <div>
-          <div class="feature-hero-title">
-            Platform Infrastructure & Global Profit Oversight
-            <span class="badge badge-amber">SuperAdmin Access</span>
-          </div>
-          <div class="feature-hero-desc">
-            Global monitoring across all registered reseller partner agencies and direct client tenants. Track platform net profit, buffered telecom unit costs (₹2.00/min base), and master virtual DID phone pool allocation.
-          </div>
-          <div class="feature-hero-tags">
-            <span class="feature-tag-pill">💰 Platform Profit: Wholesale vs Retail</span>
-            <span class="feature-tag-pill">📞 Virtual DID Inventory</span>
-            <span class="feature-tag-pill">🤝 Partner Attribution</span>
-          </div>
-        </div>
+    <!-- SUPERADMIN HEADER ROW -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h2 style="font-size: 1.35rem; font-weight: 800; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+          <span>👑</span> Platform Infrastructure & Profit Oversight
+          <span class="badge badge-amber" style="font-size: 0.72rem;">SuperAdmin</span>
+        </h2>
+        <p style="margin: 4px 0 0 0; font-size: 0.84rem; color: var(--text-secondary);">
+          Global monitoring across registered reseller partner agencies and direct client tenants.
+        </p>
       </div>
       <div style="display: flex; gap: 8px;">
         <button class="btn btn-primary btn-sm" onclick="openOnboardResellerModal()">+ Onboard Partner Agency 🚀</button>
@@ -422,6 +439,15 @@
             <span>Supervisor Escalation: <strong id="client-esc" style="color:var(--emerald); font-family:var(--font-mono);">+917022721098</strong></span>
             <span>Virtual DID: <strong id="client-did" style="color:var(--text-secondary); font-family:var(--font-mono);">None Assigned</strong></span>
           </div>
+          <!-- TALKTIME RECHARGE STRIP -->
+          <div style="margin-top: 8px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+            <div id="client-recharge-badge" style="background: rgba(16, 185, 129, 0.12); border: 1px solid rgba(16, 185, 129, 0.35); color: #065f46; font-size: 0.82rem; padding: 4px 10px; border-radius: 8px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px;">
+              <span>🔋 Talktime Balance:</span>
+              <strong id="client-wallet-val" style="font-size: 0.92rem; font-family: var(--font-mono);">₹0.00</strong>
+              <span id="client-talktime-est" style="opacity: 0.85; font-weight: 500; font-size: 0.76rem;">(~0 mins @ ₹5.00/min)</span>
+            </div>
+            <div id="client-wallet-status"></div>
+          </div>
         </div>
       </div>
 
@@ -491,85 +517,26 @@
       </div>
     </div>
 
-    <!-- ENTERPRISE SUB-NAVIGATION BAR (Filter by Feature) -->
-    <div class="subnav-container" id="subnav-bar">
-      <div class="subnav-tabs">
-        <button class="subnav-btn active" data-subtab="all" onclick="switchClientSubTab('all')">
-          <span>📊</span> All-In-One Overview
-        </button>
-        <button class="subnav-btn" data-subtab="agents" onclick="switchClientSubTab('agents')">
-          <span>🤖</span> Agents & DIDs
-        </button>
-        <button class="subnav-btn" data-subtab="telemetry" onclick="switchClientSubTab('telemetry')">
-          <span>📈</span> Telemetry & KPIs
-        </button>
-        <button class="subnav-btn" data-subtab="leads" onclick="switchClientSubTab('leads')">
-          <span>🎯</span> Leads CRM Pipeline
-        </button>
-        <button class="subnav-btn" data-subtab="calls" onclick="switchClientSubTab('calls')">
-          <span>📞</span> Calls & Transcripts
-        </button>
-        <button class="subnav-btn" data-subtab="lab" onclick="switchClientSubTab('lab')">
-          <span>🧪</span> Real Call & Reasoning Lab
-        </button>
-        <button class="subnav-btn" data-subtab="knowledge" onclick="switchClientSubTab('knowledge')">
-          <span>📚</span> Knowledge Base & RAG
-        </button>
-        <button class="subnav-btn" data-subtab="whatsapp" onclick="switchPanel('whatsapp')">
-          <span>💬</span> WhatsApp AI Chatbot <span class="badge badge-emerald" style="font-size:0.62rem; padding:1px 5px; margin-left:4px; font-weight:700;">LIVE</span>
-        </button>
-      </div>
-
-      <div class="subnav-quick-actions">
-        <button class="btn btn-outline btn-sm" onclick="openCreateAgentModal()" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap; border-color: rgba(99,102,241,0.5); color: var(--indigo);">
-          + New Agent 🤖
-        </button>
-        <button class="btn btn-outline btn-sm" onclick="openAddLeadModal()" style="font-size: 0.78rem; padding: 6px 12px; white-space: nowrap;">
-          + Add Lead 📝
-        </button>
-        <button class="btn btn-primary btn-sm" onclick="switchClientSubTab('lab'); document.getElementById('client-phone-input').focus();" style="font-size: 0.78rem; padding: 6px 14px; font-weight: 700; white-space: nowrap;">
-          📞 Test Call Now
-        </button>
-        <button class="btn btn-sm" onclick="switchPanel('whatsapp');" style="font-size: 0.78rem; padding: 6px 14px; font-weight: 700; white-space: nowrap; background: #25D366; color: #0b141a; border: none; box-shadow: 0 0 12px rgba(37,211,102,0.35);">
-          💬 WhatsApp AI Test
-        </button>
-      </div>
-    </div>
-
     <!-- SECTION 0: AI AGENTS & MULTI-AGENT DID ROUTING -->
     <div id="client-section-agents" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">🤖</div>
-          <div>
-            <div class="feature-hero-title">
-              AI Agents & Virtual DID Routing
-              <span class="badge badge-indigo">Unified RAG Knowledge Base</span>
-            </div>
-            <div class="feature-hero-desc">
-              Create multiple specialized agents (Admissions, Placements, Customer Support) that all share your verified business knowledge base. Assign or hot-switch which agent answers each of your phone lines with zero downtime.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">⚡ Instant Sub-5ms Hot-Switch</span>
-              <span class="feature-tag-pill">📚 100% Intact Shared Knowledge Base</span>
-              <span class="feature-tag-pill">📞 Per-DID Department Routing</span>
-            </div>
-          </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h3 style="margin: 0; font-size: 1.2rem; font-weight: 800; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+            <span>🤖</span> AI Agents & Inbound Phone Routing
+            <span class="badge badge-indigo" style="font-size: 0.72rem;">Shared Knowledge Base</span>
+          </h3>
+          <p style="margin: 4px 0 0 0; font-size: 0.82rem; color: var(--text-secondary);">
+            Assign and hot-switch specialized department agents across your phone lines.
+            <a href="javascript:void(0)" onclick="switchPanel('docs'); switchDocsTab('agents');" style="color: var(--indigo); font-weight: 600; text-decoration: none; margin-left: 6px;">
+              📖 Read Single DID Routing Guide ↗
+            </a>
+          </p>
         </div>
-        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+        <div style="display: flex; gap: 8px; align-items: center;">
           <span class="badge badge-emerald" id="agents-count-badge">2 Active Agents</span>
           <button class="btn btn-primary btn-sm" onclick="openCreateAgentModal()" style="font-weight: 700;">
             + Create New Agent 🤖
           </button>
-        </div>
-      </div>
-
-      <!-- NOTICE: SINGLE DID SWITCHING EXPLANATION -->
-      <div style="background: rgba(99, 102, 241, 0.08); border-left: 4px solid var(--indigo); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; font-size: 0.85rem; color: var(--text-secondary); display: flex; align-items: flex-start; gap: 10px;">
-        <span style="font-size: 1.2rem;">💡</span>
-        <div>
-          <strong style="color: var(--indigo);">Single DID Multi-Agent Support:</strong>
-          You can use a <strong>single phone number</strong> for multiple agents! If you have only 1 DID line, you can switch it anytime between Admissions (Aanya), Placements (Rohan), or any custom agent below. Every incoming call to that number will instantly be answered by the currently assigned agent with their specialized greeting and persona.
         </div>
       </div>
 
@@ -608,25 +575,6 @@
 
     <!-- SECTION 1: TELEMETRY & BUSINESS KPIS -->
     <div id="client-section-telemetry" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">📈</div>
-          <div>
-            <div class="feature-hero-title">
-              Operational Telemetry & AI Containment
-              <span class="badge badge-emerald">Live Telephony</span>
-            </div>
-            <div class="feature-hero-desc">
-              Real-time operational monitoring across Asterisk WebRTC SIP and Exotel telecom gateways. Measures customer inbound call volume, billed talktime airtime, and AI containment without human supervisor transfers.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">⚡ Sub-800ms Turnaround</span>
-              <span class="feature-tag-pill">🛡️ Zero-Network RAM Fail-Safe</span>
-              <span class="feature-tag-pill">📞 Hybrid SIP + Exotel</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <!-- TENANT BUSINESS TELEMETRY KPI GRID -->
       <div class="stat-grid">
@@ -660,28 +608,6 @@
 
     <!-- SECTION 2: DEDICATED LEADS CRM & CUSTOMER STATUS BOARD -->
     <div id="client-section-leads" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">🎯</div>
-          <div>
-            <div class="feature-hero-title">
-              Customer Status Board & Lead Qualification CRM
-              <span class="badge badge-cyan">Automated AI Scoring</span>
-            </div>
-            <div class="feature-hero-desc">
-              Every caller is evaluated for purchase readiness and automatically categorized into Hot, Warm, or Cold lead stages. View automated executive summaries, customer concerns, and callback requests.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">🔥 Intent Qualification</span>
-              <span class="feature-tag-pill">💬 Turn-by-Turn Audio Summaries</span>
-              <span class="feature-tag-pill">⚡ Instant Sales Handoff</span>
-            </div>
-          </div>
-        </div>
-        <div>
-          <button class="btn btn-primary btn-sm" onclick="openAddLeadModal()">+ Add Manual Lead 📝</button>
-        </div>
-      </div>
 
       <div class="card">
         <div class="card-header">
@@ -758,28 +684,6 @@
 
     <!-- SECTION 3: RECENT LIVE CALLS & AI EXECUTIVE SUMMARIES -->
     <div id="client-section-calls" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">📞</div>
-          <div>
-            <div class="feature-hero-title">
-              Live Call Audio Logs & Turn-by-Turn Transcripts
-              <span class="badge badge-indigo">Verbatim Archival</span>
-            </div>
-            <div class="feature-hero-desc">
-              Audit every spoken interaction between callers and the AI advisor. Click any row to inspect verbatim conversational transcripts, speech timestamps, barge-in interruptions, and customer sentiment.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">🎙️ 60fps Realtime Waveform</span>
-              <span class="feature-tag-pill">💭 Sentiment & Intent Tagging</span>
-              <span class="feature-tag-pill">📄 Click-to-View Transcript</span>
-            </div>
-          </div>
-        </div>
-        <div>
-          <button class="btn btn-outline btn-sm" onclick="loadClientRecentCalls()">Refresh Calls 🔄</button>
-        </div>
-      </div>
 
       <!-- CANVAS 60FPS WAVEFORM VISUALIZER -->
       <div class="waveform-container" style="margin-bottom: 20px;">
@@ -841,25 +745,6 @@
 
     <!-- SECTION 4: TESTING LAB: REAL CALL + FAST TEXT -->
     <div id="client-section-lab" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">🧪</div>
-          <div>
-            <div class="feature-hero-title">
-              Interactive Telecom & Reasoning Testing Lab
-              <span class="badge badge-emerald">Real Phone Calling</span>
-            </div>
-            <div class="feature-hero-desc">
-              Experience the conversational voice agent directly on your physical mobile phone via telecom line or test prompt reasoning, knowledge citations, and human transfer rules in real-time text chat.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">📱 Real Outbound GSM Call</span>
-              <span class="feature-tag-pill">🗣️ Natural Barge-In Interruption</span>
-              <span class="feature-tag-pill">💬 Instant Chat Benchmarking</span>
-            </div>
-          </div>
-        </div>
-      </div>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 20px; margin-bottom: 20px;">
         
@@ -919,36 +804,17 @@
     </div>
 
     <!-- SECTION 5: DUAL-PDF & WEBSITE INGESTION STUDIO -->
+    <!-- SECTION 5: DUAL-PDF & WEBSITE INGESTION STUDIO -->
     <div id="client-section-knowledge" class="client-section">
-      <div class="feature-hero">
-        <div class="feature-hero-content">
-          <div class="feature-hero-icon">📚</div>
-          <div>
-            <div class="feature-hero-title">
-              Dual-PDF Vector Knowledge Base & Web Crawler
-              <span class="badge badge-cyan">Sub-30ms RAM Retrieval</span>
-            </div>
-            <div class="feature-hero-desc">
-              Ground your AI voicebot in 100% verified business facts. Upload your Company Overview PDF and Product Catalog PDF, or crawl your website URL. Vectors are cached in local RAM for zero-latency retrieval without hallucination.
-            </div>
-            <div class="feature-hero-tags">
-              <span class="feature-tag-pill">🧠 In-Memory Cosine Vector Search</span>
-              <span class="feature-tag-pill">🚫 Zero-Hallucination Guardrails</span>
-              <span class="feature-tag-pill">⚡ Dynamic Popularity Cache</span>
-            </div>
-          </div>
-        </div>
-        <div style="display: flex; gap: 8px; align-items: center;">
-          <span class="badge badge-cyan" id="rag-chunk-badge">0 Chunks Indexed</span>
-          <button class="btn btn-outline btn-sm" onclick="loadClientKnowledgeChunks()">Refresh Chunks 🔄</button>
-        </div>
-      </div>
-
       <div class="card" style="border-color: rgba(6, 182, 212, 0.35);">
-        <div class="card-header">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
           <div>
-            <h3>📚 Knowledge Source Document Uploads</h3>
+            <h3>📚 Knowledge Base & Document Vectorizer</h3>
             <p>Isolated semantic vector search with in-memory caching for sub-800ms conversational answers.</p>
+          </div>
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span class="badge badge-cyan" id="rag-chunk-badge">0 Chunks Indexed</span>
+            <button class="btn btn-outline btn-sm" onclick="loadClientKnowledgeChunks()">Refresh Chunks 🔄</button>
           </div>
         </div>
 
@@ -1010,28 +876,6 @@
 
     </div>
 
-    <!-- SECTION 6: WHATSAPP AI CHATBOT REDIRECT OVERVIEW -->
-    <div id="client-section-whatsapp" class="client-section">
-      <div class="card" style="text-align: center; padding: 48px 32px; background: #FFFFFF; border: 1px solid var(--border); border-radius: 16px;">
-        <div style="width: 64px; height: 64px; border-radius: 50%; background: rgba(37, 211, 102, 0.12); color: #25D366; font-size: 2rem; display: flex; align-items: center; justify-content: center; margin: 0 auto 16px auto;">
-          💬
-        </div>
-        <h2 style="font-size: 1.4rem; font-weight: 800; color: var(--text-primary); margin-bottom: 8px;">
-          WhatsApp AI Conversational Studio
-        </h2>
-        <p style="max-width: 640px; margin: 0 auto 24px auto; color: var(--text-secondary); font-size: 0.92rem; line-height: 1.55;">
-          Access the full dedicated WhatsApp AI Studio with live mobile phone simulator, step-by-step pipeline breakdown, enterprise ROI metrics, and real-time telemetry HUD.
-        </p>
-        <div style="display: flex; justify-content: center; gap: 12px; flex-wrap: wrap;">
-          <button class="btn btn-primary" onclick="switchPanel('whatsapp')" style="font-weight: 700; padding: 10px 24px; font-size: 0.95rem;">
-            💬 Open WhatsApp AI Studio Panel
-          </button>
-          <a href="/whatsapp" target="_blank" class="btn btn-outline" style="font-weight: 600; padding: 10px 20px; font-size: 0.95rem; text-decoration: none;">
-            🔗 Open Standalone Fullscreen Tab ↗
-          </a>
-        </div>
-      </div>
-    </div>
 
   </div> <!-- end panel-client -->
 
@@ -1041,172 +885,27 @@
        ======================================================================== -->
   <div id="panel-whatsapp" class="panel">
 
-    <!-- HERO BANNER -->
-    <div class="feature-hero" style="border-left: 4px solid #25D366; background: linear-gradient(90deg, rgba(37, 211, 102, 0.08), rgba(18, 140, 126, 0.03)); margin-bottom: 24px;">
-      <div class="feature-hero-content">
-        <div class="feature-hero-icon" style="background: rgba(37, 211, 102, 0.15); border-color: rgba(37, 211, 102, 0.4); color: #25D366;">💬</div>
-        <div>
-          <div class="feature-hero-title">
-            WhatsApp AI Conversational Studio & Inbound Lead Qualifier
-            <span class="badge badge-emerald" style="background: rgba(37, 211, 102, 0.2); color: #25D366; border-color: rgba(37, 211, 102, 0.4);">
-              Meta Cloud API Native
-            </span>
-            <span class="badge badge-indigo">Sub-500ms Turnaround</span>
-            <span class="badge badge-emerald">Isolated Multi-Tenant RAG</span>
-          </div>
-          <div class="feature-hero-desc">
-            Enterprise omnichannel conversational AI engine for WhatsApp. Grounded on tenant pgvector knowledge bases, automates course syllabus PDF brochure dispatch to prospective student mobile numbers, and seamlessly escalates qualified hot leads to human counselors.
-          </div>
-          <div class="feature-hero-tags">
-            <span class="feature-tag-pill" style="border-color: rgba(37, 211, 102, 0.3); color: #2A5C40;">⚡ Multi-Turn Groq LLM Loop</span>
-            <span class="feature-tag-pill">📄 Automated WhatsApp Brochure Dispatch</span>
-            <span class="feature-tag-pill">🚨 Senior Counselor Escalation</span>
-            <span class="feature-tag-pill">🇮🇳 Hinglish + English Bilingual</span>
-            <span class="feature-tag-pill">🔒 Zero Cross-Tenant Leakage</span>
-          </div>
-        </div>
+    <!-- WHATSAPP AI STUDIO HEADER ROW -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 14px;">
+      <div>
+        <h2 style="font-size: 1.35rem; font-weight: 800; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 10px;">
+          <span>💬</span> WhatsApp AI Conversational Studio
+          <span class="badge badge-emerald" style="background: rgba(37, 211, 102, 0.15); color: #047857; border: 1px solid rgba(37, 211, 102, 0.3); font-size: 0.72rem;">Meta Cloud API Native</span>
+        </h2>
+        <p style="margin: 4px 0 0 0; font-size: 0.84rem; color: var(--text-secondary);">
+          Real-time interactive mobile simulator, automated brochure delivery, and qualification telemetry.
+          <a href="javascript:void(0)" onclick="switchPanel('docs'); switchDocsTab('whatsapp');" style="color: #047857; font-weight: 600; text-decoration: none; margin-left: 6px;">
+            📖 Architecture & Rules in Documentation ↗
+          </a>
+        </p>
       </div>
-      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
-        <a href="/whatsapp" target="_blank" class="btn btn-primary btn-sm" style="font-weight: 700; text-decoration: none; padding: 7px 14px;">
-          🔗 Open Standalone Studio ↗
+      <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+        <a href="/chats" target="_blank" class="btn btn-outline btn-sm" style="font-weight: 600; text-decoration: none;">
+          🔗 Open /chats Route ↗
         </a>
-        <button class="btn btn-outline btn-sm" onclick="startNewWhatsAppSession()">
-          🔄 Reset Chat Session
+        <button class="btn btn-primary btn-sm" onclick="startNewWhatsAppSession()" style="font-weight: 700;">
+          🔄 Reset Session
         </button>
-      </div>
-    </div>
-
-    <!-- SECTION 1: HOW THINGS WORK (ARCHITECTURAL WORKFLOW) -->
-    <div class="wa-section-banner">
-      <div class="wa-section-header">
-        <div>
-          <div class="wa-section-heading">
-            <span>⚙️</span> How WhatsApp AI Conversational Intelligence Works
-          </div>
-          <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">
-            End-to-end execution flow: from inbound message/call trigger to grounded RAG qualification and automated brochure delivery.
-          </div>
-        </div>
-        <span class="badge badge-indigo">Automated Pipeline</span>
-      </div>
-
-      <div class="wa-explain-grid">
-        <!-- Step 1 -->
-        <div class="wa-step-card">
-          <div class="wa-step-header">
-            <span class="wa-step-num">Step 01</span>
-            <span class="wa-step-icon">📲</span>
-          </div>
-          <div class="wa-step-title">Inbound Trigger & Profile Ingestion</div>
-          <div class="wa-step-desc">
-            Prospect sends a message or completes a voice call. Webhook ingests caller mobile number, active tenant UID, and inquiry payload in &lt;50ms.
-          </div>
-          <div class="wa-step-metric">
-            <span>⚡ Ingest Latency:</span> <strong>38 ms</strong>
-          </div>
-        </div>
-
-        <!-- Step 2 -->
-        <div class="wa-step-card">
-          <div class="wa-step-header">
-            <span class="wa-step-num">Step 02</span>
-            <span class="wa-step-icon">🧠</span>
-          </div>
-          <div class="wa-step-title">Multi-Tenant RAM Vector RAG</div>
-          <div class="wa-step-desc">
-            Queries tenant-isolated knowledge chunks (curriculum, fee tiers, batch dates) via in-memory cosine embeddings. Zero data leaks between institutions.
-          </div>
-          <div class="wa-step-metric">
-            <span>🔍 Retrieval:</span> <strong>&lt;18 ms (Zero Leak)</strong>
-          </div>
-        </div>
-
-        <!-- Step 3 -->
-        <div class="wa-step-card">
-          <div class="wa-step-header">
-            <span class="wa-step-num">Step 03</span>
-            <span class="wa-step-icon">⚡</span>
-          </div>
-          <div class="wa-step-title">Groq LLM Reasoning & Guardrails</div>
-          <div class="wa-step-desc">
-            Generates accurate, friendly bilingual (Hinglish/English) responses. Hard boundary guardrails automatically redirect off-topic, sports, or competitor talk.
-          </div>
-          <div class="wa-step-metric">
-            <span>🚀 TTFT:</span> <strong>140 ms Fast Inference</strong>
-          </div>
-        </div>
-
-        <!-- Step 4 -->
-        <div class="wa-step-card">
-          <div class="wa-step-header">
-            <span class="wa-step-num">Step 04</span>
-            <span class="wa-step-icon">📄</span>
-          </div>
-          <div class="wa-step-title">Instant Brochure & CRM Pipeline Sync</div>
-          <div class="wa-step-desc">
-            Dispatches official syllabus PDF via Meta Cloud API, calculates EMI options, updates CRM stage to "Hot Qualified Lead", and triggers human counselor handoff if requested.
-          </div>
-          <div class="wa-step-metric">
-            <span>🎯 Delivery:</span> <strong>2.0s Post-Inquiry</strong>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- SECTION 2: HOW IT HELPS THE BUSINESS (ENTERPRISE VALUE & ROI) -->
-    <div class="wa-section-banner">
-      <div class="wa-section-header">
-        <div>
-          <div class="wa-section-heading">
-            <span>📈</span> How It Helps The Business (Enterprise ROI & Revenue Impact)
-          </div>
-          <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 4px;">
-            Measurable business advantages: higher admission conversion, 24/7 lead capture, and massive reduction in telecaller payroll.
-          </div>
-        </div>
-        <span class="badge badge-emerald">High ROI Impact</span>
-      </div>
-
-      <div class="wa-roi-grid">
-        <!-- ROI 1 -->
-        <div class="wa-roi-card">
-          <div class="wa-roi-badge">CONVERSION ACCELERATOR</div>
-          <div class="wa-roi-stat">340% Higher</div>
-          <div class="wa-roi-title">Admission & Sales Conversion</div>
-          <div class="wa-roi-desc">
-            WhatsApp has a 98% open rate and 45% reply rate compared to 12% call pickup for cold calls. Instant answers while interest is hot convert curious prospects into enrolled students.
-          </div>
-        </div>
-
-        <!-- ROI 2 -->
-        <div class="wa-roi-card">
-          <div class="wa-roi-badge">COST REDUCTION</div>
-          <div class="wa-roi-stat">₹0.135 vs ₹45</div>
-          <div class="wa-roi-title">Per-Lead Fulfillment Cost</div>
-          <div class="wa-roi-desc">
-            A manual telecaller costs ₹45–₹60 per call attempt with salaries and overhead. QwickCall AI qualifies and dispatches brochures via WhatsApp for just ₹0.135 per turn (99.7% savings).
-          </div>
-        </div>
-
-        <!-- ROI 3 -->
-        <div class="wa-roi-card">
-          <div class="wa-roi-badge">ZERO LEAKAGE</div>
-          <div class="wa-roi-stat">24/7 After-Hours</div>
-          <div class="wa-roi-title">Unattended Night Lead Capture</div>
-          <div class="wa-roi-desc">
-            Over 62% of education and coaching inquiries occur between 7:00 PM and 11:30 PM when human counseling desks are closed. QwickCall AI answers immediately, captures name/budget, and schedules counseling.
-          </div>
-        </div>
-
-        <!-- ROI 4 -->
-        <div class="wa-roi-card">
-          <div class="wa-roi-badge">ENTERPRISE SECURITY</div>
-          <div class="wa-roi-stat">100% Isolated</div>
-          <div class="wa-roi-title">Strict Multi-Tenant Protection</div>
-          <div class="wa-roi-desc">
-            Every client tenant operates in complete cryptographic isolation. Knowledge bases, syllabus PDFs, custom pricing, and student CRM pipelines never mix or cross-contaminate.
-          </div>
-        </div>
       </div>
     </div>
 
@@ -1371,69 +1070,15 @@
           </div>
         </div>
 
-        <!-- META CLOUD API & WHATSAPP BUSINESS SETUP -->
-        <div class="wa-deck-card">
-          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
-            <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-              <span>🌐</span> Meta Cloud API & Webhook Connection Hub
-            </div>
-            <span class="badge badge-indigo">WABA Live</span>
+        <!-- DOCUMENTATION REFERENCE CALLOUT -->
+        <div style="background: rgba(37, 211, 102, 0.08); border: 1px solid rgba(37, 211, 102, 0.25); border-radius: 12px; padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+          <div style="font-size: 0.82rem; color: #047857; display: flex; align-items: center; gap: 8px;">
+            <span>📖</span>
+            <span>Meta Cloud API configs, Webhook specs & Automation Rules are in <strong>Documentation</strong>.</span>
           </div>
-
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-            <div class="wa-meta-field">
-              <span style="color: var(--text-muted);">Phone Number ID:</span>
-              <code style="font-family: var(--font-mono); color: var(--text-primary);">+91 79354 86072</code>
-            </div>
-            <div class="wa-meta-field">
-              <span style="color: var(--text-muted);">WABA Account ID:</span>
-              <code style="font-family: var(--font-mono); color: var(--text-primary);">waba_9918231089</code>
-            </div>
-            <div class="wa-meta-field">
-              <span style="color: var(--text-muted);">Webhook Endpoint:</span>
-              <code style="font-family: var(--font-mono); color: var(--brown);">/api/v1/whatsapp/webhook</code>
-            </div>
-            <div class="wa-meta-field">
-              <span style="color: var(--text-muted);">Cost / Utility PDF:</span>
-              <strong style="color: var(--emerald);">₹0.135 (Meta ₹0.115 + RAG ₹0.02)</strong>
-            </div>
-          </div>
-        </div>
-
-        <!-- OMNICHANNEL VOICE-TO-WHATSAPP AUTOMATION RULES -->
-        <div class="wa-deck-card">
-          <div style="display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-subtle); padding-bottom: 12px;">
-            <div style="font-weight: 800; font-size: 0.95rem; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-              <span>⚡</span> Omnichannel Voice-to-WhatsApp Automation Rules
-            </div>
-            <span class="badge badge-emerald">3 Rules Active</span>
-          </div>
-
-          <div style="display: flex; flex-direction: column; gap: 10px;">
-            <div class="wa-rule-pill">
-              <div>
-                <strong style="color: var(--text-primary);">1. Instant Post-Call Brochure Dispatch:</strong>
-                <div style="color: var(--text-muted); font-size: 0.74rem;">Sends verified syllabus PDF to caller's WhatsApp within 2.0s of call disconnect.</div>
-              </div>
-              <span class="badge badge-emerald">Auto-Enabled</span>
-            </div>
-
-            <div class="wa-rule-pill">
-              <div>
-                <strong style="color: var(--text-primary);">2. Hot Lead CRM Qualification Sync:</strong>
-                <div style="color: var(--text-muted); font-size: 0.74rem;">Flags inquiries requesting fees or brochures as Hot Leads in the CRM pipeline table.</div>
-              </div>
-              <span class="badge badge-emerald">Auto-Sync</span>
-            </div>
-
-            <div class="wa-rule-pill">
-              <div>
-                <strong style="color: var(--text-primary);">3. Live Counselor Handoff Dispatch:</strong>
-                <div style="color: var(--text-muted); font-size: 0.74rem;">Transfers difficult or high-value caller inquiries to live human counselor WhatsApp.</div>
-              </div>
-              <span class="badge badge-indigo">Escalation Ready</span>
-            </div>
-          </div>
+          <button class="btn btn-outline btn-sm" onclick="switchPanel('docs'); switchDocsTab('whatsapp');" style="font-size: 0.75rem; padding: 4px 10px; border-color: rgba(37, 211, 102, 0.4); color: #047857;">
+            View Documentation ↗
+          </button>
         </div>
 
         <!-- ONE-CLICK SCENARIOS BENCHMARK -->
@@ -1497,24 +1142,22 @@
        ======================================================================== -->
   <div id="panel-showcase" class="panel">
     
-    <!-- EXECUTIVE SHOWCASE FEATURE HERO -->
-    <div class="feature-hero">
-      <div class="feature-hero-content">
-        <div class="feature-hero-icon" style="background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.3);">⚡</div>
-        <div>
-          <div class="feature-hero-title">
-            Executive Latency Benchmark & Live Sales Pitch Console
-            <span class="badge badge-emerald">Sub-Second Verified</span>
-          </div>
-          <div class="feature-hero-desc">
-            Use this live console during enterprise client pitches to demonstrate conversational responsiveness. Benchmark each stage of the turn: Sarvam STT, Groq TTFT, in-memory RAM vector retrieval, and audio streaming.
-          </div>
-          <div class="feature-hero-tags">
-            <span class="feature-tag-pill">⚡ Sarvam saaras:v3 (210ms)</span>
-            <span class="feature-tag-pill">🚀 Groq Fast Inference (165ms)</span>
-            <span class="feature-tag-pill">🎙️ Streaming Linear PCM (190ms)</span>
-          </div>
-        </div>
+    <!-- EXECUTIVE SHOWCASE HEADER ROW -->
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; flex-wrap: wrap; gap: 12px;">
+      <div>
+        <h2 style="font-size: 1.35rem; font-weight: 800; margin: 0; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
+          <span>⚡</span> Executive Latency Benchmark & Pitch Console
+          <span class="badge badge-emerald" style="font-size: 0.72rem;">Sub-Second Verified</span>
+        </h2>
+        <p style="margin: 4px 0 0 0; font-size: 0.84rem; color: var(--text-secondary);">
+          Live benchmark console for turn-by-turn latency breakdown: STT, Groq LLM inference, vector retrieval, and audio streaming.
+          <a href="javascript:void(0)" onclick="switchPanel('docs'); switchDocsTab('overview');" style="color: var(--emerald); font-weight: 600; text-decoration: none; margin-left: 6px;">
+            📖 Architecture Pipeline Specs ↗
+          </a>
+        </p>
+      </div>
+      <div>
+        <button class="btn btn-outline btn-sm" onclick="switchPanel('docs')">📚 View Documentation</button>
       </div>
     </div>
 
@@ -1575,6 +1218,599 @@
 
   </div>
 
+  <!-- ========================================================================
+       PANEL 5: PLATFORM DOCUMENTATION & ARCHITECTURE (#panel-docs)
+       ======================================================================== -->
+  <div id="panel-docs" class="panel">
+
+    <!-- DOCUMENTATION HERO BANNER -->
+    <div class="docs-card" style="background: linear-gradient(135deg, #FAF8F5 0%, #FFFFFF 100%); border-left: 5px solid #8C5E3C; margin-bottom: 20px;">
+      <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; flex-wrap: wrap;">
+        <div>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+            <span style="font-size: 1.6rem;">📚</span>
+            <h2 style="font-size: 1.45rem; font-weight: 800; color: var(--text-primary); margin: 0;">
+              QwickCall AI Documentation & Architecture
+            </h2>
+            <span class="badge badge-indigo">Enterprise Reference</span>
+          </div>
+          <p style="font-size: 0.88rem; color: var(--text-secondary); max-width: 840px; line-height: 1.55; margin: 0;">
+            Comprehensive technical reference: sub-500ms voice pipeline benchmarks, Single DID multi-agent routing rules, WhatsApp AI automation workflows, and enterprise commercial unit economics.
+          </p>
+        </div>
+        <div style="display: flex; gap: 10px; align-items: center;">
+          <button class="btn btn-primary btn-sm" onclick="switchPanel('client')">🏢 Back to Workspace</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- DOCUMENTATION NAVIGATION TABS STRIP -->
+    <div class="subnav-container" style="margin-bottom: 22px; position: static;">
+      <div class="subnav-tabs">
+        <button class="subnav-btn docs-tab-btn active" data-doctab="overview" onclick="switchDocsTab('overview')">
+          <span>⚙️</span> System Architecture & Pipeline
+        </button>
+        <button class="subnav-btn docs-tab-btn" data-doctab="agents" onclick="switchDocsTab('agents')">
+          <span>🤖</span> Single DID Multi-Agent Routing
+        </button>
+        <button class="subnav-btn docs-tab-btn" data-doctab="whatsapp" onclick="switchDocsTab('whatsapp')">
+          <span>💬</span> WhatsApp AI Studio & Automation
+        </button>
+        <button class="subnav-btn docs-tab-btn" data-doctab="roi" onclick="switchDocsTab('roi')">
+          <span>📈</span> Enterprise ROI & Unit Economics
+        </button>
+        <button class="subnav-btn docs-tab-btn" data-doctab="api" onclick="switchDocsTab('api')">
+          <span>🔌</span> Meta Cloud & Telephony APIs
+        </button>
+      </div>
+    </div>
+
+    <div class="docs-container">
+
+      <!-- ====================================================================
+           DOCS TAB 1: SYSTEM ARCHITECTURE & VOICE PIPELINE
+           ==================================================================== -->
+      <div id="docs-section-overview" class="docs-section active">
+
+        <!-- SUB-500MS TURNAROUND PIPELINE -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>⚡</span> Full-Duplex Conversational Voice Pipeline (Sub-500ms Turnaround)
+              </h3>
+              <p class="docs-card-desc">
+                Real-time audio negotiation, low-latency streaming inference, and natural conversational barge-in mechanics.
+              </p>
+            </div>
+            <span class="badge badge-emerald">Sub-Second Verified</span>
+          </div>
+
+          <div class="wa-explain-grid">
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Stage 01</span>
+                <span class="wa-step-icon">🎙️</span>
+              </div>
+              <div class="wa-step-title">Audio Streaming Ingestion</div>
+              <div class="wa-step-desc">
+                Inbound caller audio arrives over Asterisk WebRTC (WSS) or Exotel WebSocket in 20ms frames (160 samples, 8kHz mono Linear PCM / G.711 PCMA).
+              </div>
+              <div class="wa-step-metric">
+                <span>⚡ Frame Size:</span> <strong>20ms Paced Chunking</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Stage 02</span>
+                <span class="wa-step-icon">🗣️</span>
+              </div>
+              <div class="wa-step-title">Streaming Speech-to-Text</div>
+              <div class="wa-step-desc">
+                Sarvam AI saaras:v3 or Deepgram Nova-2 processes streaming PCM audio frames with persistent TLS sockets and adaptive endpointing silence thresholds.
+              </div>
+              <div class="wa-step-metric">
+                <span>⚡ Latency:</span> <strong>~210ms Streaming STT</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Stage 03</span>
+                <span class="wa-step-icon">🧠</span>
+              </div>
+              <div class="wa-step-title">In-Memory Cosine Vector RAG</div>
+              <div class="wa-step-desc">
+                Tenant-isolated knowledge vectors pre-warmed in local RAM via sentence-transformers (all-MiniLM-L6-v2) retrieve exact verified facts without database network latency.
+              </div>
+              <div class="wa-step-metric">
+                <span>🔍 Retrieval:</span> <strong>&lt;18ms (Zero Hallucination)</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Stage 04</span>
+                <span class="wa-step-icon">🚀</span>
+              </div>
+              <div class="wa-step-title">Groq LLM Reasoning & TTFT</div>
+              <div class="wa-step-desc">
+                Groq LPUs process Llama-3-70B/8B prompts with strict system boundaries, conversational fillers, and Indian colloquial intent detectors.
+              </div>
+              <div class="wa-step-metric">
+                <span>🚀 TTFT:</span> <strong>~165ms Time-to-First-Token</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="docs-callout docs-callout-info" style="margin-top: 18px;">
+            <span style="font-size: 1.3rem;">⚡</span>
+            <div>
+              <strong>Instant Conversational Barge-In:</strong>
+              When caller speech is detected while the AI is speaking, the pipeline sends a <code>clear</code> event to the audio track queue within &lt;40ms. The ongoing speech queue is drained instantly, ensuring a natural, human-like interruption experience.
+            </div>
+          </div>
+        </div>
+
+        <!-- TELEPHONY ARCHITECTURE -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>📞</span> Hybrid Dual-Gateway Telephony Architecture
+              </h3>
+              <p class="docs-card-desc">
+                Enterprise resilience combining Asterisk WebRTC SIP client and Exotel cloud telephony.
+              </p>
+            </div>
+            <span class="badge badge-indigo">Active Fail-Safe</span>
+          </div>
+
+          <div class="docs-grid-2">
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-weight: 700; color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                <span>🌐</span> Primary: RP Digital Asterisk SIP Client
+              </div>
+              <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px;">
+                Direct SIP extension registration over WebSocket (<code>wss://kenyavoice.rpdigitalphone.com:5000/ws</code>) using Digest Authentication. Bridges inbound and outbound calls with <code>aiortc</code> PeerConnections.
+              </p>
+              <ul style="font-size: 0.78rem; color: var(--text-secondary); padding-left: 18px; margin: 0; line-height: 1.6;">
+                <li>WebRTC PCMU / PCMA codec negotiation</li>
+                <li>STD Trunk Dialing with <code>0XXXXXXXXXX</code> format normalization</li>
+                <li>SIP REFER RFC 3515 live call transfer</li>
+                <li>RFC 3261 SIP BYE teardown on hangup</li>
+              </ul>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-weight: 700; color: var(--text-primary); margin-bottom: 8px; display: flex; align-items: center; gap: 8px;">
+                <span>🛡️</span> Fallback: Exotel Telecom Gateway
+              </div>
+              <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.5; margin-bottom: 10px;">
+                Rest API automated failover when Asterisk is unregistered or rejected. Outbound calls trigger via Exotel Voicebot Connect API with automated callback webhooks.
+              </p>
+              <ul style="font-size: 0.78rem; color: var(--text-secondary); padding-left: 18px; margin: 0; line-height: 1.6;">
+                <li>Exotel REST API call dispatch</li>
+                <li>Full-duplex WebSocket stream (<code>/exotel/stream</code>)</li>
+                <li>Automated fallback on Asterisk 4xx/5xx rejection</li>
+                <li>Pre-call wallet balance verification (&gt; ₹15.00 min)</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================================
+           DOCS TAB 2: SINGLE DID MULTI-AGENT ROUTING GUIDE
+           ==================================================================== -->
+      <div id="docs-section-agents" class="docs-section">
+
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>🤖</span> Single DID Multi-Agent Support & Dynamic Routing Guide
+              </h3>
+              <p class="docs-card-desc">
+                How one phone number dynamically routes incoming calls across specialized department personas without extra telecom line costs.
+              </p>
+            </div>
+            <span class="badge badge-indigo">Zero-Downtime Hot-Switch</span>
+          </div>
+
+          <div class="docs-callout docs-callout-info" style="margin-bottom: 20px;">
+            <span style="font-size: 1.3rem;">💡</span>
+            <div>
+              <strong>Single Phone Number, Multiple Specialized Personas:</strong>
+              You do NOT need to buy separate phone lines for every department! With QwickCall's dynamic DID routing engine, a <strong>single phone number</strong> can answer as Admissions (Aanya), Placements (Rohan), Support (Priya), or any custom persona. The switch happens in &lt;5ms in memory with zero downtime.
+            </div>
+          </div>
+
+          <div class="docs-grid-3">
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 1.2rem; margin-bottom: 6px;">⚡</div>
+              <div style="font-weight: 700; color: var(--text-primary); font-size: 0.92rem; margin-bottom: 6px;">Sub-5ms Hot-Switching</div>
+              <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;">
+                When you click "Switch Agent Now" in the Client Workspace, the Inbound DID mapping updates in Redis/RAM immediately. The very next caller hears the newly assigned agent's greeting.
+              </div>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 1.2rem; margin-bottom: 6px;">📚</div>
+              <div style="font-weight: 700; color: var(--text-primary); font-size: 0.92rem; margin-bottom: 6px;">100% Shared Knowledge Base</div>
+              <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;">
+                All department personas share your verified business knowledge documents (Overview PDF, Pricing Catalog, Website URLs). No data re-uploading or knowledge synchronization issues.
+              </div>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 1.2rem; margin-bottom: 6px;">🎯</div>
+              <div style="font-weight: 700; color: var(--text-primary); font-size: 0.92rem; margin-bottom: 6px;">Custom System Prompts</div>
+              <div style="font-size: 0.8rem; color: var(--text-secondary); line-height: 1.5;">
+                Each agent has its own custom role, opening greeting, tone, and supervisor escalation trigger. The AI adapts its conversational style while maintaining grounded facts.
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top: 22px; background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+            <div style="font-weight: 700; font-size: 0.92rem; color: var(--text-primary); margin-bottom: 8px;">
+              📞 Human Escalation & Supervisor Call Transfer Flow
+            </div>
+            <p style="font-size: 0.82rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 12px;">
+              When a caller asks to speak to a human or has a complex dispute:
+            </p>
+            <ol style="font-size: 0.8rem; color: var(--text-secondary); padding-left: 20px; line-height: 1.6; margin: 0;">
+              <li>The AI agent acknowledges the request politely ("Connecting you to our senior counselor now, please hold on...").</li>
+              <li>The audio queue completes playback so the farewell announcement is clearly heard.</li>
+              <li>A standard RFC 3515 <code>SIP REFER</code> message is transmitted to Asterisk PBX with the supervisor phone number (e.g., <code>07022721098</code>).</li>
+              <li>Asterisk bridges the caller's mobile directly to the human counselor's phone, releasing our AI audio track.</li>
+            </ol>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================================
+           DOCS TAB 3: WHATSAPP AI STUDIO & AUTOMATION
+           ==================================================================== -->
+      <div id="docs-section-whatsapp" class="docs-section">
+
+        <!-- WORKFLOW 4 STEPS -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>⚙️</span> How WhatsApp AI Conversational Intelligence Works
+              </h3>
+              <p class="docs-card-desc">
+                End-to-end execution flow: from inbound message/call trigger to grounded RAG qualification and automated brochure delivery.
+              </p>
+            </div>
+            <span class="badge badge-emerald">Meta Cloud Native</span>
+          </div>
+
+          <div class="wa-explain-grid">
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Step 01</span>
+                <span class="wa-step-icon">📲</span>
+              </div>
+              <div class="wa-step-title">Inbound Trigger & Ingestion</div>
+              <div class="wa-step-desc">
+                Prospect sends a message or completes a voice call. Webhook ingests caller mobile number, active tenant UID, and inquiry payload in &lt;50ms.
+              </div>
+              <div class="wa-step-metric">
+                <span>⚡ Ingest Latency:</span> <strong>38 ms</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Step 02</span>
+                <span class="wa-step-icon">🧠</span>
+              </div>
+              <div class="wa-step-title">Multi-Tenant RAM Vector RAG</div>
+              <div class="wa-step-desc">
+                Queries tenant-isolated knowledge chunks (curriculum, fee tiers, batch dates) via in-memory cosine embeddings. Zero data leaks between institutions.
+              </div>
+              <div class="wa-step-metric">
+                <span>🔍 Retrieval:</span> <strong>&lt;18 ms (Zero Leak)</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Step 03</span>
+                <span class="wa-step-icon">⚡</span>
+              </div>
+              <div class="wa-step-title">Groq LLM Reasoning & Guardrails</div>
+              <div class="wa-step-desc">
+                Generates accurate, friendly bilingual (Hinglish/English) responses. Hard boundary guardrails automatically redirect off-topic, sports, or competitor queries.
+              </div>
+              <div class="wa-step-metric">
+                <span>🚀 TTFT:</span> <strong>140 ms Fast Inference</strong>
+              </div>
+            </div>
+
+            <div class="wa-step-card">
+              <div class="wa-step-header">
+                <span class="wa-step-num">Step 04</span>
+                <span class="wa-step-icon">📄</span>
+              </div>
+              <div class="wa-step-title">Instant Brochure & CRM Sync</div>
+              <div class="wa-step-desc">
+                Dispatches official syllabus PDF via Meta Cloud API, calculates EMI options, updates CRM stage to "Hot Qualified Lead", and triggers human counselor handoff if requested.
+              </div>
+              <div class="wa-step-metric">
+                <span>🎯 Delivery:</span> <strong>2.0s Post-Inquiry</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- OMNICHANNEL VOICE-TO-WHATSAPP AUTOMATION RULES -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>⚡</span> Omnichannel Voice-to-WhatsApp Automation Rules
+              </h3>
+              <p class="docs-card-desc">
+                Automated background actions triggered across phone calls and WhatsApp messaging.
+              </p>
+            </div>
+            <span class="badge badge-indigo">3 Core Rules</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 12px;">
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <div>
+                <strong style="color: var(--text-primary); font-size: 0.92rem;">1. Instant Post-Call Brochure Dispatch:</strong>
+                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 3px;">
+                  Sends verified syllabus PDF to caller's WhatsApp within 2.0s of call disconnect when caller expressed interest in courses or fees.
+                </div>
+              </div>
+              <span class="badge badge-emerald">Auto-Enabled</span>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <div>
+                <strong style="color: var(--text-primary); font-size: 0.92rem;">2. Hot Lead CRM Qualification Sync:</strong>
+                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 3px;">
+                  Automatically tags callers requesting fees, syllabus, or admissions as Hot Leads in the CRM pipeline table with intent summaries.
+                </div>
+              </div>
+              <span class="badge badge-emerald">Auto-Sync</span>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; display: flex; justify-content: space-between; align-items: center; gap: 14px; flex-wrap: wrap;">
+              <div>
+                <strong style="color: var(--text-primary); font-size: 0.92rem;">3. Live Counselor Handoff Dispatch:</strong>
+                <div style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 3px;">
+                  Sends WhatsApp notification with caller details and inquiry transcript to senior human counseling desks for immediate high-value closing.
+                </div>
+              </div>
+              <span class="badge badge-indigo">Escalation Ready</span>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================================
+           DOCS TAB 4: ENTERPRISE ROI & REVENUE IMPACT
+           ==================================================================== -->
+      <div id="docs-section-roi" class="docs-section">
+
+        <!-- 4 ROI CARDS -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>📈</span> Enterprise ROI & Revenue Impact
+              </h3>
+              <p class="docs-card-desc">
+                Measurable business advantages: higher admission conversion, 24/7 lead capture, and massive reduction in telecaller payroll.
+              </p>
+            </div>
+            <span class="badge badge-emerald">High ROI Impact</span>
+          </div>
+
+          <div class="wa-roi-grid">
+            <div class="wa-roi-card">
+              <div class="wa-roi-badge">CONVERSION ACCELERATOR</div>
+              <div class="wa-roi-stat">340% Higher</div>
+              <div class="wa-roi-title">Admission & Sales Conversion</div>
+              <div class="wa-roi-desc">
+                WhatsApp has a 98% open rate and 45% reply rate compared to 12% call pickup for cold calls. Instant answers while interest is hot convert curious prospects into enrolled students.
+              </div>
+            </div>
+
+            <div class="wa-roi-card">
+              <div class="wa-roi-badge">COST REDUCTION</div>
+              <div class="wa-roi-stat">₹0.135 vs ₹45</div>
+              <div class="wa-roi-title">Per-Lead Fulfillment Cost</div>
+              <div class="wa-roi-desc">
+                A manual telecaller costs ₹45–₹60 per call attempt with salaries and overhead. QwickCall AI qualifies and dispatches brochures via WhatsApp for just ₹0.135 per turn (99.7% savings).
+              </div>
+            </div>
+
+            <div class="wa-roi-card">
+              <div class="wa-roi-badge">ZERO LEAKAGE</div>
+              <div class="wa-roi-stat">24/7 After-Hours</div>
+              <div class="wa-roi-title">Unattended Night Lead Capture</div>
+              <div class="wa-roi-desc">
+                Over 62% of education and coaching inquiries occur between 7:00 PM and 11:30 PM when human desks are closed. QwickCall AI answers immediately, captures name/budget, and schedules counseling.
+              </div>
+            </div>
+
+            <div class="wa-roi-card">
+              <div class="wa-roi-badge">ENTERPRISE SECURITY</div>
+              <div class="wa-roi-stat">100% Isolated</div>
+              <div class="wa-roi-title">Strict Multi-Tenant Protection</div>
+              <div class="wa-roi-desc">
+                Every client tenant operates in complete cryptographic isolation. Knowledge bases, syllabus PDFs, custom pricing, and student CRM pipelines never mix or cross-contaminate.
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- COMMERCIAL MARGIN MODEL -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>💰</span> B2B Wholesale vs Retail Profit Model
+              </h3>
+              <p class="docs-card-desc">
+                How platform owners and agency partners generate recurring monthly voice arbitrage revenue.
+              </p>
+            </div>
+            <span class="badge badge-amber">Commercial Arbitrage</span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; text-align: center; margin-bottom: 18px;">
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 0.76rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Platform Base Unit Cost</div>
+              <div style="font-size: 1.8rem; font-weight: 800; color: #F59E0B; margin: 4px 0;">₹2.00 / min</div>
+              <div style="font-size: 0.74rem; color: var(--text-secondary);">Real telco + AI model cost + ₹0.20 safety buffer</div>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 0.76rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Agency Wholesale Cost</div>
+              <div style="font-size: 1.8rem; font-weight: 800; color: #6366F1; margin: 4px 0;">₹3.00 / min</div>
+              <div style="font-size: 0.74rem; color: var(--text-secondary);">Fixed wholesale rate charged by Platform Owner</div>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 0.76rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase;">Client Retail Price</div>
+              <div style="font-size: 1.8rem; font-weight: 800; color: #059669; margin: 4px 0;">₹5.00 / min</div>
+              <div style="font-size: 0.74rem; color: var(--text-secondary);">Billed directly to end-client business tenant</div>
+            </div>
+
+            <div style="background: #FAF8F5; border: 1.5px solid rgba(16, 185, 129, 0.4); border-radius: 12px; padding: 18px;">
+              <div style="font-size: 0.76rem; font-weight: 700; color: #065F46; text-transform: uppercase;">Agency Net Margin</div>
+              <div style="font-size: 1.8rem; font-weight: 800; color: #047857; margin: 4px 0;">₹2.00 / min</div>
+              <div style="font-size: 0.74rem; color: #065F46; font-weight: 600;">100% kept by reseller agency partner</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ====================================================================
+           DOCS TAB 5: META CLOUD & REST TELEPHONY APIS
+           ==================================================================== -->
+      <div id="docs-section-api" class="docs-section">
+
+        <!-- META CLOUD WABA SPEC -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>🌐</span> Meta Cloud API & WhatsApp Business Account (WABA) Setup
+              </h3>
+              <p class="docs-card-desc">
+                Production connection details and webhook routing parameters.
+              </p>
+            </div>
+            <span class="badge badge-indigo">WABA Live</span>
+          </div>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px;">
+            <div class="wa-meta-field">
+              <span style="color: var(--text-muted);">Phone Number ID:</span>
+              <code style="font-family: var(--font-mono); color: var(--text-primary); font-weight: 700;">+91 79354 86072</code>
+            </div>
+            <div class="wa-meta-field">
+              <span style="color: var(--text-muted);">WABA Account ID:</span>
+              <code style="font-family: var(--font-mono); color: var(--text-primary); font-weight: 700;">waba_9918231089</code>
+            </div>
+            <div class="wa-meta-field">
+              <span style="color: var(--text-muted);">Webhook Inbound Endpoint:</span>
+              <code style="font-family: var(--font-mono); color: var(--brown); font-weight: 700;">/api/v1/whatsapp/webhook</code>
+            </div>
+            <div class="wa-meta-field">
+              <span style="color: var(--text-muted);">Utility Message Fulfillment Cost:</span>
+              <strong style="color: var(--emerald);">₹0.135 (Meta ₹0.115 + Vector RAG ₹0.02)</strong>
+            </div>
+          </div>
+        </div>
+
+        <!-- TELEPHONY REST ENDPOINTS -->
+        <div class="docs-card">
+          <div class="docs-card-header">
+            <div>
+              <h3 class="docs-card-title">
+                <span>🔌</span> Telephony REST & WebSocket Streaming API Reference
+              </h3>
+              <p class="docs-card-desc">
+                Programmatic endpoints for triggering calls, streaming audio, and querying transcripts.
+              </p>
+            </div>
+            <span class="badge badge-cyan">REST / WebSockets</span>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 16px;">
+            
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <span class="badge badge-emerald" style="font-family: var(--font-mono);">POST</span>
+                <code style="font-family: var(--font-mono); font-weight: 700; color: var(--text-primary);">/api/call/make-call</code>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">— Initiates outbound conversational voicebot phone call</span>
+              </div>
+              <div class="docs-code-box">
+<pre style="margin: 0;">// Request Payload
+{
+  "phone_number": "+919630729848",
+  "tenant_id": "cl_idigitalstudie_82d5",
+  "stream_mode": true
+}
+
+// Success Response (HTTP 200)
+{
+  "status": "success",
+  "message": "Calling +919630729848 via RP Digital DID +917935486072...",
+  "call_sid": "sip_out_eab23d724351",
+  "vendor": "rpdigital"
+}</pre>
+              </div>
+            </div>
+
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <span class="badge badge-indigo" style="font-family: var(--font-mono);">GET</span>
+                <code style="font-family: var(--font-mono); font-weight: 700; color: var(--text-primary);">/api/call/recent?tenant_id={tenant_id}</code>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">— Fetches recent call logs and executive summaries</span>
+              </div>
+            </div>
+
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <span class="badge badge-indigo" style="font-family: var(--font-mono);">GET</span>
+                <code style="font-family: var(--font-mono); font-weight: 700; color: var(--text-primary);">/api/call/{call_id}/transcript</code>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">— Returns turn-by-turn recorded dialogue transcript</span>
+              </div>
+            </div>
+
+            <div>
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <span class="badge badge-amber" style="font-family: var(--font-mono);">WS</span>
+                <code style="font-family: var(--font-mono); font-weight: 700; color: var(--text-primary);">ws://localhost:8001/sip/stream?call_id={id}&amp;caller={phone}</code>
+                <span style="font-size: 0.8rem; color: var(--text-muted);">— Full-duplex WebRTC audio streaming bridge</span>
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
+
     </main>
   </div>
 </div>
@@ -1619,7 +1855,7 @@
       </div>
       <button class="modal-close-btn" onclick="closeInputModal()">✕</button>
     </div>
-    <form id="enterprise-input-form" onsubmit="handleInputModalSubmit(event)">
+    <form id="enterprise-input-form" onsubmit="handleInputModalSubmit(event)" novalidate>
       <div class="modal-body" style="padding: 20px 24px;">
         <label id="input-modal-label" style="display: block; font-size: 0.84rem; font-weight: 600; color: var(--text-primary); margin-bottom: 8px;">Enter Value</label>
         
@@ -1733,6 +1969,11 @@
         <div class="form-group">
           <label>Tenant Work Email *</label>
           <input type="email" id="adm-tnt-email" class="form-control" placeholder="admin@apexhealth.in" required />
+        </div>
+        <div class="form-group">
+          <label>Portal Login Password *</label>
+          <input type="text" id="adm-tnt-pwd" class="form-control" value="tenant123" placeholder="Default: tenant123" required />
+          <small style="color:var(--text-muted); font-size:0.75rem;">Password allowing the tenant client to authenticate into their dashboard portal.</small>
         </div>
         <div class="form-group">
           <label>Partner / Reseller Attribution</label>
@@ -2261,6 +2502,138 @@
       </div>
     </div>
 
+  </div>
+<!-- TEST CALL MODAL -->
+<div id="test-call-modal" class="modal-backdrop" onclick="if(event.target===this) closeTestCallModal()">
+  <div class="modal-container" role="dialog" aria-modal="true" style="max-width: 500px;">
+    <div class="modal-header">
+      <div class="modal-title-group">
+        <h3>📞 Test Live AI Phone Call</h3>
+        <p>Trigger a real telephone call to your mobile phone</p>
+      </div>
+      <button class="modal-close-btn" onclick="closeTestCallModal()" title="Close (Esc)">✕</button>
+    </div>
+    <div class="modal-body" style="padding: 20px 24px;">
+      <div style="background: #FAF8F5; border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; margin-bottom: 16px;">
+        <div style="font-size: 0.76rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;">Testing Voicebot For</div>
+        <div id="modal-test-call-tenant-name" style="font-size: 0.95rem; font-weight: 800; color: var(--text-primary); margin-top: 2px;">Active Tenant</div>
+      </div>
+
+      <div class="form-group">
+        <label style="font-weight: 700;">Enter Your Mobile Phone Number *</label>
+        <input type="text" id="modal-test-phone-input" class="form-control" placeholder="+91XXXXXXXXXX" value="+919630729848" style="font-family: var(--font-mono); font-size: 1rem; padding: 10px 14px;" />
+        <span style="font-size: 0.74rem; color: var(--text-muted); margin-top: 4px; display: block;">Include country code (e.g. +91 for India). Telecom gateway will dial this immediately.</span>
+      </div>
+
+      <button id="modal-test-call-submit-btn" class="btn btn-primary" onclick="triggerModalTestCall()" style="width: 100%; padding: 12px; font-weight: 700; font-size: 0.95rem; margin-top: 6px;">
+        📞 Call My Phone Now 🚀
+      </button>
+
+      <div id="modal-test-call-status" style="margin-top: 14px; padding: 12px; border-radius: 8px; font-size: 0.82rem; display: none;"></div>
+
+      <div style="margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 0.78rem; color: var(--text-muted);">Want in-browser audio & conversational lab?</span>
+        <button type="button" class="btn btn-outline btn-sm" onclick="closeTestCallModal(); switchClientSubTab('lab');" style="font-size: 0.76rem;">
+          Open Call Lab 🧪
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TENANT PORTAL AUTHENTICATION GATEWAY -->
+<div id="tenant-login-overlay" class="modal-backdrop" style="z-index: 99999; background: rgba(28, 24, 21, 0.88); backdrop-filter: blur(12px);">
+  <div class="modal-container" style="max-width: 440px; width: 90%; background: #FFFFFF; border-radius: 18px; border: 1px solid var(--border); box-shadow: 0 25px 60px rgba(0,0,0,0.3); overflow: hidden; animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
+    <div style="background: linear-gradient(135deg, #FAF8F5 0%, #F3EFE9 100%); padding: 30px 24px 22px; border-bottom: 1px solid var(--border); text-align: center;">
+      <div style="width: 54px; height: 54px; border-radius: 14px; background: var(--brown-subtle); border: 1px solid var(--brown); margin: 0 auto 14px; display: flex; align-items: center; justify-content: center; font-size: 1.6rem; color: var(--brown); box-shadow: 0 4px 14px rgba(140,94,60,0.18);">
+        🏢
+      </div>
+      <h3 style="font-size: 1.35rem; font-weight: 800; color: var(--text-primary); letter-spacing: -0.01em;">Client Workspace Login</h3>
+      <p style="font-size: 0.84rem; color: var(--text-muted); margin-top: 6px;">Sign in with your Tenant ID or registered Email and password configured by your SuperAdmin.</p>
+    </div>
+
+    <form id="tenant-login-form" onsubmit="submitTenantLogin(event)" style="padding: 24px;">
+      <div id="tenant-login-error" style="display: none; background: var(--rose-bg); border: 1px solid rgba(158,55,48,0.3); color: var(--rose); padding: 10px 14px; border-radius: 8px; font-size: 0.82rem; margin-bottom: 16px; font-weight: 600;"></div>
+
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label style="font-weight: 700; font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 6px; display: block;">Tenant ID or Registered Email *</label>
+        <input type="text" id="tenant-login-user" class="form-control" placeholder="e.g. idigitalstudies or info@company.com" required style="padding: 10px 14px; font-size: 0.92rem; border-radius: 8px;" />
+      </div>
+
+      <div class="form-group" style="margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label style="font-weight: 700; font-size: 0.82rem; color: var(--text-secondary);">Portal Password *</label>
+          <span style="font-size: 0.72rem; color: var(--text-muted);">Default: <code style="font-family: var(--font-mono); color: var(--brown); font-weight:700;">tenant123</code></span>
+        </div>
+        <div style="position: relative;">
+          <input type="password" id="tenant-login-pass" class="form-control" placeholder="••••••••" required style="padding: 10px 38px 10px 14px; font-size: 0.92rem; border-radius: 8px;" />
+          <button type="button" onclick="togglePasswordVisibility('tenant-login-pass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 1rem; color: var(--text-muted);" title="Toggle password visibility">👁️</button>
+        </div>
+      </div>
+
+      <button type="submit" id="tenant-login-btn" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 700; border-radius: 8px; box-shadow: 0 4px 14px rgba(43,33,24,0.18);">
+        Sign In to Workspace 🚀
+      </button>
+
+      <div style="margin-top: 16px; padding: 10px 12px; background: #FAF8F5; border-radius: 8px; border: 1px solid var(--border); font-size: 0.76rem; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between;">
+        <span>Demo Tenant:</span>
+        <button type="button" class="btn btn-outline btn-sm" onclick="autofillTenantDemo()" style="font-size: 0.72rem; padding: 3px 8px; border-color: var(--brown); color: var(--brown);">
+          Autofill (idigitalstudies)
+        </button>
+      </div>
+
+      <div style="margin-top: 14px; text-align: center; font-size: 0.74rem; color: var(--text-muted);">
+        🔒 Passwords & permissions are managed by <a href="/admin" target="_blank" style="color: var(--brown); font-weight: 600; text-decoration: none;">Platform SuperAdmin</a> • <a href="/login?portal=tenant" style="color: var(--brown); font-weight: 700; text-decoration: underline;">Open Full Login Page →</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- RESELLER PARTNER PORTAL LOGIN GATEWAY -->
+<div id="reseller-login-overlay" class="modal-backdrop" style="z-index: 99999; background: rgba(28, 24, 21, 0.88); backdrop-filter: blur(12px);">
+  <div class="modal-container" style="max-width: 440px; width: 90%; background: #FFFFFF; border-radius: 18px; border: 1px solid var(--border); box-shadow: 0 25px 60px rgba(0,0,0,0.3); overflow: hidden; animation: popIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);">
+    <div style="background: linear-gradient(135deg, #FAF8F5 0%, #EEF2FF 100%); padding: 30px 24px 22px; border-bottom: 1px solid var(--border); text-align: center;">
+      <div style="width: 54px; height: 54px; border-radius: 14px; background: rgba(99,102,241,0.12); border: 1px solid rgba(99,102,241,0.3); margin: 0 auto 14px; display: flex; align-items: center; justify-content: center; font-size: 1.6rem; color: #6366F1; box-shadow: 0 4px 14px rgba(99,102,241,0.18);">
+        🤝
+      </div>
+      <h3 style="font-size: 1.35rem; font-weight: 800; color: var(--text-primary); letter-spacing: -0.01em;">Partner Agency Login</h3>
+      <p style="font-size: 0.84rem; color: var(--text-muted); margin-top: 6px;">Sign in to your wholesale voice AI distribution profit portal.</p>
+    </div>
+
+    <form id="reseller-login-form" onsubmit="submitResellerLogin(event)" style="padding: 24px;">
+      <div id="reseller-login-error" style="display: none; background: var(--rose-bg); border: 1px solid rgba(158,55,48,0.3); color: var(--rose); padding: 10px 14px; border-radius: 8px; font-size: 0.82rem; margin-bottom: 16px; font-weight: 600;"></div>
+
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label style="font-weight: 700; font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 6px; display: block;">Partner Work Email *</label>
+        <input type="email" id="reseller-login-email" class="form-control" placeholder="partner@apexsolutions.in" required style="padding: 10px 14px; font-size: 0.92rem; border-radius: 8px;" />
+      </div>
+
+      <div class="form-group" style="margin-bottom: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label style="font-weight: 700; font-size: 0.82rem; color: var(--text-secondary);">Partner Password *</label>
+          <span style="font-size: 0.72rem; color: var(--text-muted);">Default: <code style="font-family: var(--font-mono); color: #6366F1; font-weight:700;">partner123</code></span>
+        </div>
+        <div style="position: relative;">
+          <input type="password" id="reseller-login-pass" class="form-control" placeholder="••••••••" required style="padding: 10px 38px 10px 14px; font-size: 0.92rem; border-radius: 8px;" />
+          <button type="button" onclick="togglePasswordVisibility('reseller-login-pass', this)" style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 1rem; color: var(--text-muted);" title="Toggle password visibility">👁️</button>
+        </div>
+      </div>
+
+      <button type="submit" id="reseller-login-btn" class="btn btn-primary" style="width: 100%; padding: 12px; font-size: 0.95rem; font-weight: 700; border-radius: 8px; background: #4F46E5; border-color: #4F46E5; box-shadow: 0 4px 14px rgba(79,70,229,0.25);">
+        Sign In to Partner Portal 🚀
+      </button>
+
+      <div style="margin-top: 16px; padding: 10px 12px; background: #FAF8F5; border-radius: 8px; border: 1px solid var(--border); font-size: 0.76rem; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between;">
+        <span>Demo Partner:</span>
+        <button type="button" class="btn btn-outline btn-sm" onclick="autofillResellerDemo()" style="font-size: 0.72rem; padding: 3px 8px; border-color: #6366F1; color: #6366F1;">
+          Autofill (Apex Partner)
+        </button>
+      </div>
+
+      <div style="margin-top: 14px; text-align: center; font-size: 0.74rem; color: var(--text-muted);">
+        🔒 Passwords & wholesale agreements are managed by <a href="/admin" target="_blank" style="color: #6366F1; font-weight: 600; text-decoration: none;">Platform SuperAdmin</a>.
+      </div>
+    </form>
   </div>
 </div>
 

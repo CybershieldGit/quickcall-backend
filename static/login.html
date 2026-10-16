@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sign In — QwickCall AI Enterprise Voice Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/css/style.css?v=20261008_02" />
+<style>
+  :root {
+    --login-bg: #F8F7F4;
+    --login-card: #FFFFFF;
+    --login-border: #E5DFD5;
+    --login-espresso: #2B2118;
+    --login-cognac: #8C5E3C;
+    --login-muted: #665B52;
+  }
+
+  body {
+    min-height: 100vh;
+    background: radial-gradient(circle at 50% 0%, #FAF6EE 0%, #F5F1E8 60%, #EFE9DE 100%);
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    align-items: center;
+    padding: 32px 16px;
+    margin: 0;
+    box-sizing: border-box;
+  }
+
+  .login-container {
+    width: 100%;
+    max-width: 480px;
+    margin: auto 0;
+  }
+
+  .login-brand-header {
+    text-align: center;
+    margin-bottom: 24px;
+  }
+
+  .login-brand-logo {
+    width: 58px;
+    height: 58px;
+    border-radius: 16px;
+    background: #FAF5EE;
+    border: 1px solid rgba(140, 94, 60, 0.35);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.85rem;
+    color: var(--login-cognac);
+    box-shadow: 0 8px 24px rgba(140, 94, 60, 0.16);
+    margin-bottom: 12px;
+    transition: transform 0.2s ease;
+  }
+  .login-brand-logo:hover {
+    transform: scale(1.04);
+  }
+
+  .login-brand-title {
+    font-size: 1.65rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: var(--login-espresso);
+    margin: 0 0 6px;
+  }
+  .login-brand-title span {
+    color: var(--login-cognac);
+  }
+
+  .login-brand-subtitle {
+    font-size: 0.88rem;
+    color: var(--login-muted);
+    font-weight: 500;
+    margin: 0;
+  }
+
+  .login-card {
+    background: var(--login-card);
+    border: 1px solid var(--login-border);
+    border-radius: 20px;
+    box-shadow: 0 20px 48px -10px rgba(43, 33, 24, 0.12), 0 1px 3px rgba(43, 33, 24, 0.05);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .login-portal-tabs {
+    display: flex;
+    background: #F4EFE6;
+    padding: 6px;
+    border-bottom: 1px solid var(--login-border);
+    gap: 4px;
+  }
+
+  .login-portal-tab {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 10px 8px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--login-muted);
+    background: transparent;
+    border: none;
+    border-radius: 10px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: all 0.2s ease;
+  }
+  .login-portal-tab:hover {
+    color: var(--login-espresso);
+    background: rgba(255, 255, 255, 0.5);
+  }
+  .login-portal-tab.active {
+    background: #FFFFFF;
+    color: var(--login-espresso);
+    box-shadow: 0 2px 8px rgba(43, 33, 24, 0.08);
+  }
+
+  .login-portal-banner {
+    padding: 20px 24px 16px;
+    background: linear-gradient(135deg, #FAF8F5 0%, #F5F0E8 100%);
+    border-bottom: 1px solid var(--login-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .login-portal-info h3 {
+    font-size: 1.05rem;
+    font-weight: 800;
+    margin: 0 0 4px;
+    color: var(--login-espresso);
+  }
+  .login-portal-info p {
+    font-size: 0.78rem;
+    color: var(--login-muted);
+    margin: 0;
+  }
+
+  .login-form {
+    padding: 24px;
+  }
+
+  .form-group {
+    margin-bottom: 18px;
+  }
+
+  .form-label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+  }
+
+  .form-hint {
+    font-size: 0.72rem;
+    color: var(--login-muted);
+    font-family: var(--font-mono);
+  }
+
+  .input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .input-icon {
+    position: absolute;
+    left: 14px;
+    font-size: 1rem;
+    color: var(--login-muted);
+    pointer-events: none;
+  }
+
+  .login-input {
+    width: 100%;
+    padding: 11px 14px 11px 40px;
+    border: 1px solid var(--login-border);
+    border-radius: 10px;
+    background: #FAF8F5;
+    font-size: 0.92rem;
+    font-family: var(--font-sans);
+    color: var(--text-primary);
+    transition: all 0.2s ease;
+    box-sizing: border-box;
+  }
+  .login-input:focus {
+    outline: none;
+    background: #FFFFFF;
+    border-color: var(--login-cognac);
+    box-shadow: 0 0 0 3px rgba(140, 94, 60, 0.15);
+  }
+
+  .toggle-pwd-btn {
+    position: absolute;
+    right: 12px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--login-muted);
+    padding: 4px;
+    border-radius: 6px;
+  }
+  .toggle-pwd-btn:hover {
+    color: var(--login-espresso);
+  }
+
+  .login-error-alert {
+    display: none;
+    background: #FBEBE9;
+    border: 1px solid rgba(158, 55, 48, 0.3);
+    color: #9E3730;
+    padding: 10px 14px;
+    border-radius: 10px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    margin-bottom: 18px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .login-submit-btn {
+    width: 100%;
+    padding: 13px;
+    background: var(--login-espresso);
+    color: #FFFFFF;
+    border: none;
+    border-radius: 10px;
+    font-size: 0.95rem;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(43, 33, 24, 0.2);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .login-submit-btn:hover {
+    background: #3E3024;
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px rgba(43, 33, 24, 0.26);
+  }
+  .login-submit-btn:disabled {
+    opacity: 0.7;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .demo-autofill-box {
+    margin-top: 18px;
+    padding: 12px 14px;
+    background: #FAF8F5;
+    border: 1px dashed rgba(140, 94, 60, 0.35);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.78rem;
+    color: var(--login-muted);
+  }
+
+  .demo-autofill-btn {
+    background: #FFFFFF;
+    border: 1px solid var(--login-cognac);
+    color: var(--login-cognac);
+    font-size: 0.74rem;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .demo-autofill-btn:hover {
+    background: var(--login-cognac);
+    color: #FFFFFF;
+  }
+
+  .login-footer-badges {
+    margin-top: 24px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    font-size: 0.74rem;
+    color: var(--login-muted);
+  }
+  .login-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255, 255, 255, 0.6);
+    border: 1px solid var(--login-border);
+    padding: 4px 10px;
+    border-radius: 12px;
+  }
+
+  .login-meta-footer {
+    text-align: center;
+    margin-top: 20px;
+    font-size: 0.76rem;
+    color: var(--login-muted);
+  }
+</style>
+</head>
+<body>
+
+<div class="login-container">
+  
+  <!-- BRAND HEADER -->
+  <div class="login-brand-header">
+    <div class="login-brand-logo">⚡</div>
+    <h1 class="login-brand-title">QwickCall <span>AI</span></h1>
+    <p class="login-brand-subtitle">Autonomous Enterprise Voicebot & Telephony Platform</p>
+  </div>
+
+  <!-- MAIN LOGIN CARD -->
+  <div class="login-card">
+    
+    <!-- SEPARATE ROUTE TABS SELECTOR -->
+    <div class="login-portal-tabs" role="tablist">
+      <a href="/tenant/login" class="login-portal-tab active" id="tab-tenant" onclick="navigatePortal('tenant', event)">
+        <span>🏢</span> Client Workspace
+      </a>
+      <a href="/reseller/login" class="login-portal-tab" id="tab-reseller" onclick="navigatePortal('reseller', event)">
+        <span>🤝</span> Reseller Partner
+      </a>
+      <a href="/admin/login" class="login-portal-tab" id="tab-admin" onclick="navigatePortal('admin', event)">
+        <span>👑</span> SuperAdmin
+      </a>
+    </div>
+
+    <!-- PORTAL CONTEXT STRIP -->
+    <div class="login-portal-banner">
+      <div class="login-portal-info">
+        <h3 id="portal-title">Client Workspace Login</h3>
+        <p id="portal-desc">Access your voicebot agents, assigned DIDs, call recordings & CRM leads.</p>
+      </div>
+      <span class="badge badge-emerald" id="portal-status-badge">Multi-Tenant</span>
+    </div>
+
+    <!-- LOGIN FORM -->
+    <form id="login-form" class="login-form" onsubmit="handleLoginSubmit(event)">
+      
+      <!-- ERROR ALERT -->
+      <div id="login-error" class="login-error-alert" role="alert">
+        <span>⚠️</span>
+        <span id="login-error-msg">Invalid credentials entered.</span>
+      </div>
+
+      <!-- FIELD 1: USERNAME / EMAIL -->
+      <div class="form-group">
+        <label class="form-label" for="login-username">
+          <span id="label-username">Tenant ID or Registered Email *</span>
+        </label>
+        <div class="input-wrapper">
+          <span class="input-icon" id="icon-username">🏢</span>
+          <input 
+            type="text" 
+            id="login-username" 
+            class="login-input" 
+            placeholder="e.g. idigitalstudies or info@company.com" 
+            required 
+            autocomplete="username"
+          />
+        </div>
+      </div>
+
+      <!-- FIELD 2: PASSWORD -->
+      <div class="form-group">
+        <div class="form-label">
+          <label for="login-password">Portal Password *</label>
+          <span class="form-hint" id="default-pwd-hint">Default: <strong>tenant123</strong></span>
+        </div>
+        <div class="input-wrapper">
+          <span class="input-icon">🔒</span>
+          <input 
+            type="password" 
+            id="login-password" 
+            class="login-input" 
+            placeholder="••••••••" 
+            required 
+            autocomplete="current-password"
+            style="padding-right: 42px;"
+          />
+          <button 
+            type="button" 
+            class="toggle-pwd-btn" 
+            onclick="togglePasswordVisibility('login-password', this)" 
+            title="Toggle password view"
+          >
+            👁️
+          </button>
+        </div>
+      </div>
+
+      <!-- SUBMIT BUTTON -->
+      <button type="submit" id="login-btn" class="login-submit-btn">
+        <span>Sign In to Workspace</span> 🚀
+      </button>
+
+      <!-- 1-CLICK DEMO AUTOFILL -->
+      <div class="demo-autofill-box">
+        <div>
+          <span style="font-weight: 700; color: var(--login-espresso);" id="autofill-title">Demo Client:</span>
+          <span id="autofill-account" style="font-family: var(--font-mono); margin-left: 4px;">idigitalstudies</span>
+        </div>
+        <button type="button" class="demo-autofill-btn" onclick="autofillCurrentDemo()">
+          1-Click Autofill
+        </button>
+      </div>
+
+    </form>
+  </div>
+
+  <!-- TRUST & ARCHITECTURE BADGES -->
+  <div class="login-footer-badges">
+    <div class="login-badge">
+      <span>🛡️</span> Multi-Tenant Isolated
+    </div>
+    <div class="login-badge">
+      <span>📞</span> Asterisk SIP + Exotel
+    </div>
+    <div class="login-badge">
+      <span>⚡</span> 300ms Voicebot Pipeline
+    </div>
+  </div>
+
+  <div class="login-meta-footer">
+    QwickCall AI Autonomous Voicebot Platform v2.2.0 • Separate Enterprise Gateways
+  </div>
+
+</div>
+
+<script>
+  let currentPortal = 'tenant';
+
+  const PORTAL_CONFIG = {
+    tenant: {
+      route: '/tenant/login',
+      pageTitle: 'Client Workspace Login — QwickCall AI',
+      title: 'Client Workspace Login',
+      desc: 'Access your voicebot agents, assigned DIDs, call recordings & CRM leads.',
+      badge: 'Multi-Tenant',
+      labelUsername: 'Tenant ID or Registered Email *',
+      iconUsername: '🏢',
+      placeholderUsername: 'e.g. idigitalstudies or info@company.com',
+      hintPassword: 'Default: <strong>tenant123</strong>',
+      btnText: 'Sign In to Workspace 🚀',
+      autofillTitle: 'Demo Client:',
+      autofillAccount: 'idigitalstudies',
+      demoUser: 'idigitalstudies',
+      demoPass: 'tenant123',
+      endpoint: '/tenant/login',
+      redirectDefault: '/tenant'
+    },
+    reseller: {
+      route: '/reseller/login',
+      pageTitle: 'Partner Reseller Login — QwickCall AI',
+      title: 'Partner Reseller Login',
+      desc: 'Wholesale margins, client tenant onboarding & agency revenue analytics.',
+      badge: 'Agency Partner',
+      labelUsername: 'Partner Agency Email *',
+      iconUsername: '🤝',
+      placeholderUsername: 'partner@apexsolutions.in',
+      hintPassword: 'Default: <strong>partner123</strong>',
+      btnText: 'Sign In to Partner Hub 🚀',
+      autofillTitle: 'Demo Partner:',
+      autofillAccount: 'partner@apexsolutions.in',
+      demoUser: 'partner@apexsolutions.in',
+      demoPass: 'partner123',
+      endpoint: '/reseller/login',
+      redirectDefault: '/reseller'
+    },
+    admin: {
+      route: '/admin/login',
+      pageTitle: 'SuperAdmin Oversight Login — QwickCall AI',
+      title: 'SuperAdmin Oversight Login',
+      desc: 'Master carrier pool, global margin splits & system architecture control.',
+      badge: 'Platform Root',
+      labelUsername: 'Master Admin Email *',
+      iconUsername: '👑',
+      placeholderUsername: 'admin@qwickcall.ai',
+      hintPassword: 'Default: <strong>admin123</strong>',
+      btnText: 'Sign In as SuperAdmin 🚀',
+      autofillTitle: 'Master Root:',
+      autofillAccount: 'admin@qwickcall.ai',
+      demoUser: 'admin@qwickcall.ai',
+      demoPass: 'admin123',
+      endpoint: '/admin/login',
+      redirectDefault: '/admin'
+    }
+  };
+
+  function detectPortalFromUrl() {
+    const path = window.location.pathname.toLowerCase().replace(/\/+$/, '');
+    if (path.includes('/admin/login') || path === '/admin/login' || path.startsWith('/admin')) {
+      return 'admin';
+    }
+    if (path.includes('/reseller/login') || path === '/reseller/login' || path.startsWith('/reseller')) {
+      return 'reseller';
+    }
+    if (path.includes('/tenant/login') || path === '/tenant/login' || path.includes('/client/login') || path.startsWith('/tenant') || path.startsWith('/client')) {
+      return 'tenant';
+    }
+    const params = new URLSearchParams(window.location.search);
+    const p = params.get('portal');
+    if (p && PORTAL_CONFIG[p]) return p;
+    return 'tenant';
+  }
+
+  function navigatePortal(portalKey, event) {
+    if (event) event.preventDefault();
+    selectPortal(portalKey);
+    const targetUrl = PORTAL_CONFIG[portalKey].route + (window.location.search ? window.location.search : '');
+    if (window.location.pathname !== PORTAL_CONFIG[portalKey].route) {
+      window.history.pushState({ portal: portalKey }, '', targetUrl);
+    }
+  }
+
+  function selectPortal(portalKey) {
+    if (!PORTAL_CONFIG[portalKey]) return;
+    currentPortal = portalKey;
+    const cfg = PORTAL_CONFIG[portalKey];
+
+    document.title = cfg.pageTitle;
+
+    document.querySelectorAll('.login-portal-tab').forEach(t => t.classList.remove('active'));
+    const activeTab = document.getElementById(`tab-${portalKey}`);
+    if (activeTab) activeTab.classList.add('active');
+
+    document.getElementById('portal-title').innerText = cfg.title;
+    document.getElementById('portal-desc').innerText = cfg.desc;
+    document.getElementById('portal-status-badge').innerText = cfg.badge;
+    document.getElementById('label-username').innerText = cfg.labelUsername;
+    document.getElementById('icon-username').innerText = cfg.iconUsername;
+    
+    const userIn = document.getElementById('login-username');
+    userIn.placeholder = cfg.placeholderUsername;
+    userIn.value = '';
+
+    const passIn = document.getElementById('login-password');
+    passIn.value = '';
+
+    document.getElementById('default-pwd-hint').innerHTML = cfg.hintPassword;
+    document.getElementById('login-btn').innerHTML = `<span>${cfg.btnText}</span>`;
+    document.getElementById('autofill-title').innerText = cfg.autofillTitle;
+    document.getElementById('autofill-account').innerText = cfg.autofillAccount;
+
+    hideError();
+  }
+
+  function autofillCurrentDemo() {
+    const cfg = PORTAL_CONFIG[currentPortal];
+    if (!cfg) return;
+    document.getElementById('login-username').value = cfg.demoUser;
+    document.getElementById('login-password').value = cfg.demoPass;
+    hideError();
+  }
+
+  function togglePasswordVisibility(id, btn) {
+    const input = document.getElementById(id);
+    if (!input) return;
+    if (input.type === 'password') {
+      input.type = 'text';
+      if (btn) btn.innerText = '🙈';
+    } else {
+      input.type = 'password';
+      if (btn) btn.innerText = '👁️';
+    }
+  }
+
+  function showError(msg) {
+    const alert = document.getElementById('login-error');
+    const msgEl = document.getElementById('login-error-msg');
+    if (alert && msgEl) {
+      msgEl.innerText = msg;
+      alert.style.display = 'flex';
+    }
+  }
+
+  function hideError() {
+    const alert = document.getElementById('login-error');
+    if (alert) alert.style.display = 'none';
+  }
+
+  async function handleLoginSubmit(e) {
+    if (e) e.preventDefault();
+    hideError();
+
+    const username = document.getElementById('login-username').value.trim();
+    const password = document.getElementById('login-password').value;
+    const btn = document.getElementById('login-btn');
+
+    if (!username || !password) {
+      showError('Please enter both identifier and password.');
+      return;
+    }
+
+    const cfg = PORTAL_CONFIG[currentPortal];
+    btn.disabled = true;
+    btn.innerHTML = '<span>Verifying credentials... ⏳</span>';
+
+    try {
+      let bodyData = {};
+      if (currentPortal === 'tenant') {
+        bodyData = { username: username, password: password };
+      } else {
+        bodyData = { email: username, password: password };
+      }
+
+      const res = await fetch(cfg.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(bodyData)
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.status === 'success' && data.token) {
+        // Save session tokens by role
+        if (currentPortal === 'tenant') {
+          localStorage.setItem('qwickcall_tenant_token', data.token);
+          localStorage.setItem('qwickcall_tenant_id', data.tenant.tenant_id);
+          localStorage.setItem('qwickcall_tenant_profile', JSON.stringify(data.tenant));
+        } else if (currentPortal === 'reseller') {
+          localStorage.setItem('qwickcall_reseller_token', data.token);
+          localStorage.setItem('qwickcall_reseller_id', data.reseller.reseller_id);
+          localStorage.setItem('qwickcall_reseller_email', data.reseller.email);
+          localStorage.setItem('qwickcall_reseller_user', JSON.stringify(data.reseller));
+        } else if (currentPortal === 'admin') {
+          localStorage.setItem('qwickcall_admin_token', data.token);
+          localStorage.setItem('qwickcall_admin_user', JSON.stringify(data.user));
+        }
+
+        btn.innerHTML = '<span>Authentication successful! Redirecting... ✓</span>';
+        
+        // Check for redirect query param
+        const urlParams = new URLSearchParams(window.location.search);
+        const redirectUrl = urlParams.get('redirect') || cfg.redirectDefault;
+        
+        setTimeout(() => {
+          window.location.href = redirectUrl;
+        }, 350);
+      } else {
+        const errMessage = data.detail || data.message || 'Authentication failed. Please verify your credentials.';
+        showError(errMessage);
+        btn.disabled = false;
+        btn.innerHTML = `<span>${cfg.btnText}</span>`;
+      }
+    } catch (err) {
+      showError('Network error connecting to platform authentication service: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = `<span>${cfg.btnText}</span>`;
+    }
+  }
+
+  // Handle browser back/forward buttons
+  window.addEventListener('popstate', (e) => {
+    const p = (e.state && e.state.portal) ? e.state.portal : detectPortalFromUrl();
+    selectPortal(p);
+  });
+
+  // Automatically detect and initialize active portal from URL pathname
+  window.addEventListener('DOMContentLoaded', () => {
+    const p = detectPortalFromUrl();
+    selectPortal(p);
+  });
+</script>
+
+</body>
+</html>

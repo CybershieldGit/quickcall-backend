@@ -227,6 +227,7 @@ function openInputModal({
   suffix = '',
   step = 'any',
   min = '0',
+  inputType = 'number',
   placeholder = '',
   presets = [],
   hint = '',
@@ -256,9 +257,15 @@ function openInputModal({
 
   const field = document.getElementById('input-modal-field');
   if (field) {
+    field.type = inputType || 'number';
     field.value = value;
-    field.step = step;
-    if (min !== null && min !== undefined) field.min = min;
+    if (inputType === 'number') {
+      field.step = step;
+      if (min !== null && min !== undefined) field.min = min;
+    } else {
+      field.removeAttribute('step');
+      field.removeAttribute('min');
+    }
     if (placeholder) field.placeholder = placeholder;
   }
 
@@ -400,7 +407,26 @@ function handleConfirmModalCancel() {
   if (typeof cb === 'function') cb();
 }
 
-function switchPanel(panelId) {
+const ROUTE_MAP = {
+  'client': '/tenant',
+  'reseller': '/reseller',
+  'admin': '/admin',
+  'showcase': '/simulator',
+  'whatsapp': '/chats',
+  'docs': '/docs-portal'
+};
+
+const PANEL_BY_PATH = {
+  '/admin': 'admin',
+  '/reseller': 'reseller',
+  '/tenant': 'client',
+  '/client': 'client',
+  '/simulator': 'showcase',
+  '/docs-portal': 'docs',
+  '/docs': 'docs'
+};
+
+function switchPanel(panelId, updateHistory = true) {
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.panel-tab-btn').forEach(b => {
     b.classList.remove('active');
@@ -424,6 +450,15 @@ function switchPanel(panelId) {
 
   currentActivePanel = panelId;
 
+  // Sync browser URL bar with dedicated route
+  if (updateHistory && typeof window !== 'undefined' && window.history) {
+    const targetPath = ROUTE_MAP[panelId] || '/tenant';
+    const currentPath = window.location.pathname.replace(/\/+$/, '') || '/';
+    if (currentPath !== targetPath) {
+      window.history.pushState({ panel: panelId }, '', targetPath);
+    }
+  }
+
   // Always reset scroll to top immediately when switching panels
   window.scrollTo({ top: 0, left: 0, behavior: 'instant' });
   document.documentElement.scrollTop = 0;
@@ -439,7 +474,8 @@ function switchPanel(panelId) {
     'reseller': 'Reseller Agency Profit Hub',
     'admin': 'Platform SuperAdmin Oversight',
     'showcase': 'Voicebot Simulator & Latency Pitch',
-    'whatsapp': 'WhatsApp AI Conversational Studio'
+    'whatsapp': 'WhatsApp AI Conversational Studio',
+    'docs': 'Platform Documentation & Architecture'
   };
   const topbarTitle = document.getElementById('topbar-section-title');
   if (topbarTitle && titleMap[panelId]) {
@@ -470,8 +506,39 @@ function switchPanel(panelId) {
  * Allows one-click switching between Overview, Leads CRM, Call Logs, Lab, and RAG Studio
  */
 function switchClientSubTab(tabName) {
+  // Ensure the client workspace panel is active whenever a workspace subtab is clicked
+  const activePanel = document.querySelector('.panel.active');
+  if (!activePanel || activePanel.id !== 'panel-client') {
+    if (typeof switchPanel === 'function') {
+      switchPanel('client', true);
+    }
+  }
+
+  // Sync hash in browser URL bar
+  if (typeof window !== 'undefined' && window.history) {
+    const targetHash = tabName === 'all' ? 'overview' : tabName;
+    try {
+      window.history.replaceState(null, '', `#${targetHash}`);
+    } catch (e) {}
+  }
+
   document.querySelectorAll('.subnav-btn').forEach(btn => {
     btn.classList.toggle('active', btn.getAttribute('data-subtab') === tabName);
+  });
+  document.querySelectorAll('.sidebar-nav-item[data-subtab]').forEach(btn => {
+    const isActive = btn.getAttribute('data-subtab') === tabName;
+    btn.classList.toggle('active', isActive);
+    const badge = btn.querySelector('.nav-item-badge');
+    if (isActive) {
+      if (!badge) {
+        const b = document.createElement('span');
+        b.className = 'nav-item-badge';
+        b.textContent = 'Active';
+        btn.appendChild(b);
+      }
+    } else if (badge) {
+      badge.remove();
+    }
   });
 
   const allSections = document.querySelectorAll('.client-section');
@@ -516,6 +583,20 @@ function switchClientSubTab(tabName) {
 
 function openWhatsAppChatTab() {
   switchPanel('whatsapp');
+}
+
+/**
+ * Documentation Hub Sub-Navigation Tab Switcher
+ */
+function switchDocsTab(tabId) {
+  document.querySelectorAll('.docs-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.getAttribute('data-doctab') === tabId);
+  });
+  document.querySelectorAll('.docs-section').forEach(sec => {
+    sec.classList.toggle('active', sec.id === `docs-section-${tabId}`);
+  });
+  const container = document.querySelector('.app-viewport') || window;
+  if (container.scrollTo) container.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 /**
@@ -693,18 +774,59 @@ function escapeHtml(str) {
   return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-// Auto-init on page load
+// Browser Back/Forward navigation support
+window.addEventListener('popstate', (e) => {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  if (e.state && e.state.panel) {
+    switchPanel(e.state.panel, false);
+  } else if (PANEL_BY_PATH[path]) {
+    switchPanel(PANEL_BY_PATH[path], false);
+  } else if (path === '/') {
+    switchPanel('client', false);
+  }
+});
+
+// Auto-init on page load based on pathname or hash
 window.addEventListener('DOMContentLoaded', () => {
   loadTtsStatus();
   if (typeof loadAvailableNumbers === 'function') loadAvailableNumbers();
   if (typeof loadTenantsList === 'function') loadTenantsList();
   if (typeof loadResellerData === 'function') loadResellerData();
 
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
   const hash = window.location.hash.replace('#', '');
-  if (hash && ['client', 'reseller', 'admin', 'showcase', 'whatsapp'].includes(hash)) {
-    switchPanel(hash);
-  } else if (hash && ['leads', 'calls', 'telemetry', 'lab', 'knowledge'].includes(hash)) {
-    switchPanel('client');
-    setTimeout(() => { if (typeof switchClientSubTab === 'function') switchClientSubTab(hash); }, 150);
+  const clientSubtabs = ['overview', 'all', 'agents', 'telemetry', 'leads', 'calls', 'lab', 'knowledge'];
+
+  if (hash && clientSubtabs.includes(hash)) {
+    switchPanel('client', false);
+    setTimeout(() => {
+      if (typeof switchClientSubTab === 'function') {
+        switchClientSubTab(hash === 'overview' ? 'all' : hash);
+      }
+    }, 120);
+  } else if (PANEL_BY_PATH[path]) {
+    switchPanel(PANEL_BY_PATH[path], false);
+  } else {
+    if (hash && ['client', 'reseller', 'admin', 'showcase', 'whatsapp', 'chats', 'chat', 'docs'].includes(hash)) {
+      if (hash === 'chats' || hash === 'chat') {
+        switchPanel('whatsapp', true);
+      } else {
+        switchPanel(hash, true);
+      }
+    } else {
+      switchPanel('client', false);
+    }
   }
 });
+
+function togglePasswordVisibility(inputId, btn) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    if (btn) btn.innerText = '🙈';
+  } else {
+    input.type = 'password';
+    if (btn) btn.innerText = '👁️';
+  }
+}

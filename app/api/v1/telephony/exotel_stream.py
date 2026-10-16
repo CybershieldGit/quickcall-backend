@@ -334,15 +334,17 @@ async def websocket_exotel_stream(websocket: WebSocket):
             active_lang = agent.session.get("language") if agent and hasattr(agent, "session") else None
             cached = is_tts_cached(clean_text, target_sample_rate=8000, language_code=active_lang)
             if call_id in SESSIONS:
-                SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(clean_text)
+                sess_data = SESSIONS[call_id]
+                sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(clean_text)
                 if cached:
-                    SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(clean_text)
+                    sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(clean_text)
                 else:
-                    SESSIONS[call_id]["tts_billable_characters"] = SESSIONS[call_id].get("tts_billable_characters", 0) + len(clean_text)
+                    sess_data["tts_billable_characters"] = sess_data.get("tts_billable_characters", 0) + len(clean_text)
+                SESSIONS[call_id] = sess_data
             chunk_count = 0
             pacing_start = time.perf_counter()
             pacing_base = 0
-            async for chunk in stream_synthesize_pcm(text, target_sample_rate=8000):
+            async for chunk in stream_synthesize_pcm(clean_text, target_sample_rate=8000, language_code=active_lang):
                 if current_gen != playback_generation:
                     break
                 chunk_count += 1
@@ -463,8 +465,10 @@ async def websocket_exotel_stream(websocket: WebSocket):
             if filler_chunks:
                 has_filler = True
                 if call_id in SESSIONS and filler_name:
-                    SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(filler_name)
-                    SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(filler_name)
+                    sess_data = SESSIONS[call_id]
+                    sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(filler_name)
+                    sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(filler_name)
+                    SESSIONS[call_id] = sess_data
                 filler_queue = asyncio.Queue()
                 for fchunk in filler_chunks:
                     await filler_queue.put(("chunk", fchunk, False, False, ""))
@@ -490,11 +494,13 @@ async def websocket_exotel_stream(websocket: WebSocket):
                 active_lang = agent.session.get("language") if agent and hasattr(agent, "session") else None
                 cached = is_tts_cached(clean_s, target_sample_rate=8000, language_code=active_lang)
                 if call_id in SESSIONS:
-                    SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(clean_s)
+                    sess_data = SESSIONS[call_id]
+                    sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(clean_s)
                     if cached:
-                        SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(clean_s)
+                        sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(clean_s)
                     else:
-                        SESSIONS[call_id]["tts_billable_characters"] = SESSIONS[call_id].get("tts_billable_characters", 0) + len(clean_s)
+                        sess_data["tts_billable_characters"] = sess_data.get("tts_billable_characters", 0) + len(clean_s)
+                    SESSIONS[call_id] = sess_data
                 t_synth_start = time.perf_counter()
                 chunk_idx = 0
                 async for chunk in stream_synthesize_pcm(clean_s, target_sample_rate=8000, language_code=active_lang):

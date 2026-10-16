@@ -1,28 +1,130 @@
-async function getResellerToken() {
-  let token = localStorage.getItem('qwickcall_reseller_token');
-  if (!token || token.startsWith('reseller_token_')) {
-    try {
-      const res = await fetch('/api/v1/reseller/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'partner@apexsolutions.in', password: 'partner123' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.token) {
-          token = data.token;
-          localStorage.setItem('qwickcall_reseller_token', token);
-        }
+function getResellerToken() {
+  return localStorage.getItem('qwickcall_reseller_token') || '';
+}
+
+function checkResellerAuth() {
+  const overlay = document.getElementById('reseller-login-overlay');
+  const token = localStorage.getItem('qwickcall_reseller_token');
+  const rid = localStorage.getItem('qwickcall_reseller_id');
+
+  if (!token || !rid) {
+    if (overlay) {
+      overlay.style.display = 'flex';
+      overlay.classList.add('active');
+    }
+    window.location.href = '/reseller/login';
+    return false;
+  }
+
+  currentResellerId = rid;
+  const savedEmail = localStorage.getItem('qwickcall_reseller_email');
+  const emailEl = document.getElementById('topbar-reseller-email');
+  if (emailEl && savedEmail) emailEl.innerText = savedEmail;
+
+  if (overlay) {
+    overlay.style.display = 'none';
+    overlay.classList.remove('active');
+  }
+  return true;
+}
+
+function autofillResellerDemo() {
+  const e = document.getElementById('reseller-login-email');
+  const p = document.getElementById('reseller-login-pass');
+  if (e) e.value = 'partner@apexsolutions.in';
+  if (p) p.value = 'partner123';
+}
+
+async function submitResellerLogin(e) {
+  if (e) e.preventDefault();
+  const emailEl = document.getElementById('reseller-login-email');
+  const passEl = document.getElementById('reseller-login-pass');
+  const errEl = document.getElementById('reseller-login-error');
+  const btn = document.getElementById('reseller-login-btn');
+
+  const email = emailEl ? emailEl.value.trim() : '';
+  const password = passEl ? passEl.value : '';
+
+  if (!email || !password) {
+    if (errEl) {
+      errEl.innerText = 'Partner email and password are required.';
+      errEl.style.display = 'block';
+    }
+    return;
+  }
+
+  if (errEl) errEl.style.display = 'none';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerText = 'Signing in... ⏳';
+  }
+
+  try {
+    const res = await fetch('/api/v1/reseller/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await res.json();
+
+    if (res.ok && data.status === 'success' && data.token) {
+      localStorage.setItem('qwickcall_reseller_token', data.token);
+      localStorage.setItem('qwickcall_reseller_id', data.reseller.reseller_id);
+      localStorage.setItem('qwickcall_reseller_email', data.reseller.email);
+      localStorage.setItem('qwickcall_reseller_user', JSON.stringify(data.reseller));
+
+      currentResellerId = data.reseller.reseller_id;
+
+      const emailEl = document.getElementById('topbar-reseller-email');
+      if (emailEl) emailEl.innerText = data.reseller.email;
+
+      const overlay = document.getElementById('reseller-login-overlay');
+      if (overlay) {
+        overlay.style.display = 'none';
+        overlay.classList.remove('active');
       }
-    } catch (e) {
-      console.warn('Reseller token error:', e);
+
+      showToast(`✓ Welcome, ${data.reseller.company_name}!`);
+      loadResellerData();
+    } else {
+      const msg = data.detail || data.message || 'Invalid partner login credentials. Contact SuperAdmin.';
+      if (errEl) {
+        errEl.innerText = msg;
+        errEl.style.display = 'block';
+      }
+      showToast(msg, false);
+    }
+  } catch (err) {
+    if (errEl) {
+      errEl.innerText = 'Connection error: ' + err.message;
+      errEl.style.display = 'block';
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerText = 'Sign In to Partner Portal 🚀';
     }
   }
-  return token || '';
+}
+
+function logoutReseller() {
+  try {
+    localStorage.removeItem('qwickcall_reseller_token');
+    localStorage.removeItem('qwickcall_reseller_id');
+    localStorage.removeItem('qwickcall_reseller_email');
+    localStorage.removeItem('qwickcall_reseller_user');
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('qwickcall_reseller')) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch (e) {}
+  window.location.replace('/reseller/login');
 }
 
 async function resellerFetch(url, options = {}) {
-  const token = await getResellerToken();
+  const token = getResellerToken();
   const headers = Object.assign({}, options.headers || {}, {
     'Authorization': `Bearer ${token}`
   });
@@ -38,6 +140,9 @@ let currentResellerId = 'partner_apex';
 let activeWholesaleRate = 3.00;
 
 async function loadResellerData() {
+  if (!checkResellerAuth()) {
+    return;
+  }
   const resellerId = currentResellerId;
   try {
     // 1. Fetch Reseller Financial Overview & Margin Economics
@@ -222,8 +327,8 @@ function promptEditClientRate(tenantId, currentRate) {
     value: Number(currentRate || 5.0).toFixed(2),
     prefix: '₹',
     suffix: '/min',
-    step: '0.25',
-    min: '0.50',
+    step: 'any',
+    min: '0.01',
     presets: [
       { label: '₹3.50/m', value: 3.50 },
       { label: '₹4.50/m', value: 4.50 },
@@ -283,8 +388,8 @@ function promptTopupClient(tenantId) {
     value: '500',
     prefix: '₹',
     suffix: 'INR',
-    step: '50',
-    min: '10',
+    step: 'any',
+    min: '1',
     presets: [
       { label: '+₹250', value: 250 },
       { label: '+₹500', value: 500 },
@@ -318,4 +423,13 @@ function promptTopupClient(tenantId) {
       }
     }
   });
+}
+
+// Auto-check on script load
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', checkResellerAuth);
+  } else {
+    checkResellerAuth();
+  }
 }

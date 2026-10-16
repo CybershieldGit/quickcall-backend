@@ -95,8 +95,10 @@ def log_raw_operational_cost(conn, call_id: str, dur_sec: float, outcome_tag: st
 
         tts_chars = max(db_tts_chars, session_tts_chars)
         # Use billable characters for billing calculations (RAM cache hits are ₹0.00)
-        if session_billable_chars > 0 or session_cached_chars > 0:
-            billable_tts_chars = session_billable_chars if session_billable_chars > 0 else max(0, tts_chars - session_cached_chars)
+        if session_cached_chars > 0:
+            billable_tts_chars = max(0, tts_chars - session_cached_chars)
+        elif session_billable_chars > 0:
+            billable_tts_chars = session_billable_chars
         else:
             billable_tts_chars = tts_chars
 
@@ -120,8 +122,10 @@ def log_raw_operational_cost(conn, call_id: str, dur_sec: float, outcome_tag: st
         # 3. STT Operational Cost (Dynamically based on active STT engine)
         stt_engine = getattr(settings, "STT_ENGINE", "sarvam").lower()
         session_stt_sec = float(sess.get("stt_audio_seconds") or 0.0)
-        estimated_stt_sec = min(dur_sec * 0.5, max(len(caller_texts) * 3.5, caller_words * 0.45))
-        stt_seconds = max(session_stt_sec, estimated_stt_sec)
+        if session_stt_sec > 0:
+            stt_seconds = session_stt_sec
+        else:
+            stt_seconds = min(dur_sec * 0.5, max(len(caller_texts) * 3.5, caller_words * 0.45))
         
         if stt_engine == "deepgram":
             stt_cost = (stt_seconds / 60.0) * 0.372
@@ -137,18 +141,33 @@ def log_raw_operational_cost(conn, call_id: str, dur_sec: float, outcome_tag: st
         llm_cost = (in_tokens * 0.000051) + (out_tokens * 0.000068)
 
         # 5. Carrier Airtime Wholesale Cost
-        # RP Digital provides unlimited free inbound and outbound airtime (fixed flat DID fee only)
-        trunk_cost = 0.0
-        trunk_desc = "RP Digital SIP (Unlimited Free Airtime - ₹0.00/min)"
+        # RP Digital SIP: flat fee with unlimited free airtime
+        # Exotel: ₹0.00 if BYOC (direct client account), ₹0.50/min if master pool
+        if str(call_id).startswith("sip_"):
+            trunk_cost = 0.0
+            trunk_desc = "RP Digital SIP (Unlimited Free Airtime - ₹0.00/min)"
+        else:
+            # Exotel telephony
+            t_mode = sess.get("telephony_mode", "master_pool")
+            if t_mode == "byoc":
+                trunk_cost = 0.0
+                trunk_desc = "Exotel BYOC (Direct Tenant Billing - ₹0.00/min)"
+            else:
+                trunk_cost = (dur_sec / 60.0) * 0.50
+                trunk_desc = "Exotel Master Pool Carrier (₹0.50/min)"
 
         total_op_cost = tts_cost + stt_cost + llm_cost + trunk_cost
         dur_mins = round(dur_sec / 60.0, 2)
         cost_per_min = round(total_op_cost / (dur_sec / 60.0), 2) if dur_sec > 0 else total_op_cost
 
-        if cost_per_min <= 1.80:
-            budget_status = f"✅ OPTIMAL QUALITY TIER (₹{cost_per_min:.2f} <= ₹1.80/min target)"
+        if cost_per_min < 1.20:
+            budget_status = f"🟢 ULTRA-ECONOMICAL (₹{cost_per_min:.2f} / min < ₹1.20)"
+        elif cost_per_min <= 1.70:
+            budget_status = f"✅ TARGET QUALITY SWEET SPOT (₹{cost_per_min:.2f} / min, balanced cost & counselor depth)"
+        elif cost_per_min <= 1.80:
+            budget_status = f"🟡 APPROACHING TARGET CEILING (₹{cost_per_min:.2f} / min <= ₹1.80)"
         elif cost_per_min <= 2.00:
-            budget_status = f"🟡 BUFFER ZONE (₹{cost_per_min:.2f} / min, within ₹0.20 safety buffer)"
+            budget_status = f"⚠️ BUFFER ZONE (₹{cost_per_min:.2f} / min, within ₹0.20 safety buffer)"
         else:
             budget_status = f"❌ EXCEEDED (₹{cost_per_min:.2f} / min > ₹2.00 cap)"
 
@@ -207,77 +226,85 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
                 )
                 conn.commit()
 
-                # 2. Settle Call Billing & Margins
-                call_info = conn.execute(
-                    text("""
-                        SELECT c.duration, c.tenant_id, t.reseller_id, t.rate_per_min, r.wholesale_rate_per_min
-                        FROM calls c
-                        JOIN tenants t ON t.tenant_id = c.tenant_id
-                        LEFT JOIN resellers r ON r.reseller_id = t.reseller_id
-                        WHERE c.call_id = :cid
-                    """),
+                # 2. Settle Call Billing & Margins (Idempotent: settle only once per call)
+                existing_tx = conn.execute(
+                    text("SELECT transaction_id FROM billing_transactions WHERE call_id = :cid LIMIT 1"),
                     {"cid": call_id}
                 ).fetchone()
 
-                if call_info:
-                    dur_sec = float(call_info[0] or 0.0)
-                    tenant_id = call_info[1]
-                    reseller_id = call_info[2]
-                    rate_per_min = float(call_info[3] or 5.00)
-                    wholesale_rate = float(call_info[4] or 3.00)
-                    base_cost_rate = float(getattr(settings, "PLATFORM_BASE_COST_PER_MIN", 2.00))
+                if existing_tx:
+                    print(f"💰 [Billing Settle] Call {call_id} already settled ({existing_tx[0]}). Skipping duplicate wallet deduction.")
+                else:
+                    call_info = conn.execute(
+                        text("""
+                            SELECT c.duration, c.tenant_id, t.reseller_id, t.rate_per_min, r.wholesale_rate_per_min
+                            FROM calls c
+                            JOIN tenants t ON t.tenant_id = c.tenant_id
+                            LEFT JOIN resellers r ON r.reseller_id = t.reseller_id
+                            WHERE c.call_id = :cid
+                        """),
+                        {"cid": call_id}
+                    ).fetchone()
 
-                    # Billable minutes (minimum 15s billable as 0.25 min, otherwise exact float)
-                    billable_mins = max(0.25, round(dur_sec / 60.0, 2)) if dur_sec > 5 else 0.0
+                    if call_info:
+                        dur_sec = float(call_info[0] or 0.0)
+                        tenant_id = call_info[1]
+                        reseller_id = call_info[2]
+                        rate_per_min = float(call_info[3] or 5.00)
+                        wholesale_rate = float(call_info[4] or 3.00)
+                        base_cost_rate = float(getattr(settings, "PLATFORM_BASE_COST_PER_MIN", 2.00))
 
-                    if billable_mins > 0:
-                        client_charge = round(billable_mins * rate_per_min, 2)
+                        # Billable minutes (minimum 15s billable as 0.25 min, otherwise exact float)
+                        billable_mins = max(0.25, round(dur_sec / 60.0, 2)) if dur_sec > 5 else 0.0
 
-                        if reseller_id:
-                            reseller_cost = round(billable_mins * wholesale_rate, 2)
-                            reseller_profit = round(max(0.0, client_charge - reseller_cost), 2)
-                            owner_profit = round(max(0.0, reseller_cost - (billable_mins * base_cost_rate)), 2)
+                        if billable_mins > 0:
+                            client_charge = round(billable_mins * rate_per_min, 2)
 
-                            # Deduct from client wallet
-                            conn.execute(
-                                text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
-                                {"chg": client_charge, "tid": tenant_id}
-                            )
-                            # Deduct wholesale cost from reseller wallet
-                            conn.execute(
-                                text("UPDATE resellers SET wallet_balance = GREATEST(0.0, wallet_balance - :cst) WHERE reseller_id = :rid"),
-                                {"cst": reseller_cost, "rid": reseller_id}
-                            )
-                        else:
-                            # Direct business (no reseller)
-                            reseller_cost = 0.0
-                            reseller_profit = 0.0
-                            owner_profit = round(max(0.0, client_charge - (billable_mins * base_cost_rate)), 2)
+                            if reseller_id:
+                                reseller_cost = round(billable_mins * wholesale_rate, 2)
+                                reseller_profit = round(max(0.0, client_charge - reseller_cost), 2)
+                                owner_profit = round(max(0.0, reseller_cost - (billable_mins * base_cost_rate)), 2)
 
-                            # Deduct from client wallet
-                            conn.execute(
-                                text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
-                                {"chg": client_charge, "tid": tenant_id}
-                            )
+                                # Deduct from client wallet
+                                conn.execute(
+                                    text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
+                                    {"chg": client_charge, "tid": tenant_id}
+                                )
+                                # Deduct wholesale cost from reseller wallet
+                                conn.execute(
+                                    text("UPDATE resellers SET wallet_balance = GREATEST(0.0, wallet_balance - :cst) WHERE reseller_id = :rid"),
+                                    {"cst": reseller_cost, "rid": reseller_id}
+                                )
+                            else:
+                                # Direct business (no reseller)
+                                reseller_cost = 0.0
+                                reseller_profit = 0.0
+                                owner_profit = round(max(0.0, client_charge - (billable_mins * base_cost_rate)), 2)
 
-                        # Insert billing transaction record
-                        tx_id = f"tx_{uuid.uuid4().hex[:12]}"
-                        conn.execute(text("""
-                            INSERT INTO billing_transactions (
-                                transaction_id, call_id, tenant_id, reseller_id, duration_seconds, 
-                                billable_minutes, rate_per_min, wholesale_rate_per_min, client_charged, 
-                                reseller_cost, reseller_profit, owner_net_profit, notes, timestamp
-                            ) VALUES (
-                                :tx, :cid, :tid, :rid, :dur, :bm, :rpm, :wrpm, :cc, :rc, :rp, :op, 'Call Airtime Settle', :now
-                            )
-                        """), {
-                            "tx": tx_id, "cid": call_id, "tid": tenant_id, "rid": reseller_id,
-                            "dur": dur_sec, "bm": billable_mins, "rpm": rate_per_min, "wrpm": wholesale_rate,
-                            "cc": client_charge, "rc": reseller_cost, "rp": reseller_profit, "op": owner_profit,
-                            "now": now
-                        })
-                        conn.commit()
-                        print(f"💰 [Billing Settle] Call {call_id}: {dur_sec}s ({billable_mins}m) -> Client: ₹{client_charge} | Reseller Profit: ₹{reseller_profit} | Owner Net Profit: ₹{owner_profit}")
+                                # Deduct from client wallet
+                                conn.execute(
+                                    text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
+                                    {"chg": client_charge, "tid": tenant_id}
+                                )
+
+                            # Insert billing transaction record
+                            tx_id = f"tx_{uuid.uuid4().hex[:12]}"
+                            conn.execute(text("""
+                                INSERT INTO billing_transactions (
+                                    transaction_id, call_id, tenant_id, reseller_id, duration_seconds, 
+                                    billable_minutes, rate_per_min, wholesale_rate_per_min, client_charged, 
+                                    reseller_cost, reseller_profit, owner_net_profit, notes, timestamp
+                                ) VALUES (
+                                    :tx, :cid, :tid, :rid, :dur, :bm, :rpm, :wrpm, :cc, :rc, :rp, :op, 'Call Airtime Settle', :now
+                                )
+                            """), {
+                                "tx": tx_id, "cid": call_id, "tid": tenant_id, "rid": reseller_id,
+                                "dur": dur_sec, "bm": billable_mins, "rpm": rate_per_min, "wrpm": wholesale_rate,
+                                "cc": client_charge, "rc": reseller_cost, "rp": reseller_profit, "op": owner_profit,
+                                "now": now
+                            })
+                            conn.commit()
+                            print(f"💰 [Billing Settle] Call {call_id}: {dur_sec}s ({billable_mins}m) -> Client: ₹{client_charge} | Reseller Profit: ₹{reseller_profit} | Owner Net Profit: ₹{owner_profit}")
 
                 # 3. Log Pure Provider-Level Operational Cost & Character Usage Audit
                 log_raw_operational_cost(conn, call_id, dur_sec, outcome_tag)

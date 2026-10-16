@@ -16,7 +16,7 @@ from sqlalchemy import text
 
 from app.config import settings
 from app.db.session import sync_engine
-from app.core.auth import verify_password, create_access_token, get_current_reseller
+from app.core.auth import verify_password, hash_password, create_access_token, get_current_reseller
 
 router = APIRouter(prefix="/api/v1/reseller", tags=["Reseller Partner Portal"])
 
@@ -32,6 +32,7 @@ class SubClientCreateRequest(BaseModel):
     reseller_id: str = "partner_apex"
     business_name: str
     email: str
+    password: Optional[str] = "tenant123"
     retail_rate_per_min: float = 5.00
     plan: str = "starter"  # starter | growth | enterprise
     initial_wallet_balance: float = 500.0
@@ -278,12 +279,13 @@ def create_sub_client(req: SubClientCreateRequest):
 
         # Insert Tenant
         conn.execute(text("""
-            INSERT INTO tenants (tenant_id, business_name, email, api_key, status, plan, telephony_mode, reseller_id, rate_per_min, wallet_balance)
-            VALUES (:tid, :name, :email, :key, 'active', :plan, 'master_pool', :rid, :rate, :bal)
+            INSERT INTO tenants (tenant_id, business_name, email, password_hash, api_key, status, plan, telephony_mode, reseller_id, rate_per_min, wallet_balance)
+            VALUES (:tid, :name, :email, :pwd, :key, 'active', :plan, 'master_pool', :rid, :rate, :bal)
         """), {
             "tid": tenant_id,
             "name": req.business_name,
             "email": req.email,
+            "pwd": hash_password(req.password.strip() if req.password else "tenant123"),
             "key": api_key,
             "plan": req.plan,
             "rid": req.reseller_id,

@@ -37,6 +37,7 @@ class Tenant(Base):
     tenant_id = Column(String(64), primary_key=True, index=True)
     business_name = Column(String(255), nullable=False)
     email = Column(String(255), nullable=True)
+    password_hash = Column(String(255), nullable=True)
     api_key = Column(String(128), nullable=True, unique=True, index=True)
     status = Column(String(32), default="active")
     plan = Column(String(64), default="starter")  # starter, growth, enterprise

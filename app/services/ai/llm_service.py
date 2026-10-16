@@ -146,9 +146,10 @@ def build_system_prompt(
             "     English: 'I am Aanya, an admissions counselor at iDigital Studies! How can I help you explore our digital marketing courses today?'\n"
             "     Hindi: 'Main Aanya hoon, iDigital Studies se admissions counselor! Main aapko courses, fees aur placement ke baare mein bata sakti hoon. Bataiye kya janna chahte hain?'\n"
             "     NEVER give robotic disclaimers like 'I am an AI assistant' or 'As a language model'.\n"
-            "3. SPOKEN PACING & DIRECT CONVERSATIONAL QUALITY (CRITICAL):\n"
-            "   - STANDARD INQUIRIES: Keep spoken replies warm, clear, and complete in 1 to 2 natural sentences (15 to 25 words). Be friendly, polite, and directly answer what the caller asked.\n"
-            "   - WHEN ASKED FOR DETAILS: If the caller asks for details, curriculum, or explanation, give an informative 2-sentence spoken summary covering SEO, performance ads, and real projects.\n"
+            "3. SPOKEN PACING & BALANCED CONVERSATIONAL COUNSELING QUALITY:\n"
+            "   - NATURAL ADMISSIONS COUNSELING: Speak warmly, helpfully, and articulately like an experienced counselor. Aim for 2 to 3 complete, engaging spoken sentences (around 25 to 35 words).\n"
+            "   - DETAILED & HELPFUL: Answer the caller's specific inquiry with genuine clarity, practical context, and encouragement, ending with an inviting question to keep the dialogue flowing.\n"
+            "   - AVOID MONOLOGUES: Keep it lively and interactive rather than delivering a continuous lecture. Never output large walls of text.\n"
             "   - RESPECT CALLER PREFERENCES (NO PUSHING WHATSAPP): If the caller says 'Not on WhatsApp', 'No', or asks you to explain verbally, NEVER mention WhatsApp or brochure again. Explain the answer directly and conversationally on the call.\n"
             "   - SPEECH CONTINUITY: Every sentence MUST be a grammatically complete, fluid spoken thought ending with appropriate punctuation (. or ?). Never emit broken fragments.\n"
             "4. NO MARKDOWN & NO HALLUCINATION:\n"
@@ -255,7 +256,7 @@ def call_gemini_generate(system_prompt: str, messages: List[Dict[str, str]], max
     if not settings.GEMINI_API_KEY:
         return None
 
-    gemini_models = [settings.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+    gemini_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", settings.GEMINI_MODEL, "gemini-flash-lite-latest", "gemini-flash-latest"]
     seen = set()
     model_candidates = [m for m in gemini_models if m and not (m in seen or seen.add(m))]
 
@@ -288,7 +289,7 @@ async def call_gemini_stream(system_prompt: str, messages: List[Dict[str, str]],
     if not settings.GEMINI_API_KEY:
         return
 
-    gemini_models = [settings.GEMINI_MODEL, "gemini-3.5-flash-lite", "gemini-2.5-flash-lite", "gemini-flash-lite-latest"]
+    gemini_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", settings.GEMINI_MODEL, "gemini-flash-lite-latest", "gemini-flash-latest"]
     seen = set()
     model_candidates = [m for m in gemini_models if m and not (m in seen or seen.add(m))]
 
@@ -416,7 +417,7 @@ def call_llm(session: Dict, user_query: str) -> str:
                 response = client.chat.completions.create(
                     model=GROQ_PRIMARY_MODEL,
                     messages=messages,
-                    max_tokens=130,
+                    max_tokens=95,
                     temperature=0.2,
                 )
                 reply = (response.choices[0].message.content or "").strip()
@@ -429,7 +430,7 @@ def call_llm(session: Dict, user_query: str) -> str:
                 response = client.chat.completions.create(
                     model=GROQ_FALLBACK_MODEL,
                     messages=messages,
-                    max_tokens=100,
+                    max_tokens=90,
                     temperature=0.2,
                 )
                 reply = (response.choices[0].message.content or "").strip()
@@ -503,7 +504,7 @@ async def call_llm_stream(session: Dict, user_query: str) -> AsyncGenerator[str,
                     stream = await client.chat.completions.create(
                         model=model_name,
                         messages=messages,
-                        max_tokens=110,
+                        max_tokens=85,
                         temperature=0.2,
                         stream=True
                     )
@@ -563,7 +564,7 @@ async def call_llm_stream(session: Dict, user_query: str) -> AsyncGenerator[str,
     if settings.GEMINI_API_KEY and not groq_succeeded:
         print("⚡ [LLM Tier 1 Groq Issue] Engaging Tier 2 Fallback: Gemini Flash Lite Streaming...")
         try:
-            async for sentence in call_gemini_stream(system_prompt, messages, max_tokens=120, temperature=0.2):
+            async for sentence in call_gemini_stream(system_prompt, messages, max_tokens=85, temperature=0.2):
                 gemini_succeeded = True
                 yield sentence
             if gemini_succeeded:

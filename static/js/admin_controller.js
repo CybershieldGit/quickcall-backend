@@ -1,22 +1,38 @@
+function checkAdminAuth() {
+  const token = localStorage.getItem('qwickcall_admin_token');
+  if (!token) {
+    window.location.href = '/admin/login';
+    return false;
+  }
+  const userStr = localStorage.getItem('qwickcall_admin_user');
+  if (userStr) {
+    try {
+      const u = JSON.parse(userStr);
+      const emailEl = document.getElementById('admin-user-email');
+      if (emailEl && u.email) emailEl.innerText = `${u.email} (Root)`;
+    } catch (e) {}
+  }
+  return true;
+}
+
+function logoutAdmin() {
+  try {
+    localStorage.removeItem('qwickcall_admin_token');
+    localStorage.removeItem('qwickcall_admin_user');
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('qwickcall_admin')) {
+        localStorage.removeItem(k);
+      }
+    }
+  } catch (e) {}
+  window.location.replace('/admin/login');
+}
+
 async function getAdminToken() {
   let token = localStorage.getItem('qwickcall_admin_token');
-  if (!token || token.startsWith('admin_token_')) {
-    try {
-      const res = await fetch('/api/v1/admin/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: 'admin@qwickcall.ai', password: 'admin123' })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.token) {
-          token = data.token;
-          localStorage.setItem('qwickcall_admin_token', token);
-        }
-      }
-    } catch (e) {
-      console.warn('Admin token error:', e);
-    }
+  if (!token) {
+    checkAdminAuth();
   }
   return token || '';
 }
@@ -106,6 +122,7 @@ async function loadAdminResellers() {
           <td style="display:flex; gap:6px; flex-wrap:wrap;">
             <button class="btn btn-outline btn-sm" onclick="promptTopupReseller('${escapeHtml(r.reseller_id)}')" style="font-size:0.72rem; padding:4px 8px;">+ Credit</button>
             <button class="btn btn-outline btn-sm" onclick="promptEditResellerRate('${escapeHtml(r.reseller_id)}', ${r.wholesale_rate_per_min || 3})" style="font-size:0.72rem; padding:4px 8px;">✏️ Rate</button>
+            <button class="btn btn-outline btn-sm" onclick="promptEditResellerPassword('${escapeHtml(r.reseller_id)}', '${escapeHtml(r.company_name)}')" style="font-size:0.72rem; padding:4px 8px; border-color:#818CF8; color:#818CF8;" title="Reset login password">🔑 Password</button>
             <button class="btn btn-primary btn-sm" onclick="switchToResellerView('${escapeHtml(r.reseller_id)}')" style="font-size:0.72rem; padding:4px 8px;">View Portal →</button>
           </td>
         </tr>
@@ -155,6 +172,7 @@ async function loadAdminTenants() {
           <td style="display:flex; gap:6px; flex-wrap:wrap;">
             <button class="btn btn-outline btn-sm" onclick="promptTopupTenantAdmin('${escapeHtml(t.tenant_id)}')" style="font-size:0.72rem; padding:4px 8px;">+ Credit</button>
             <button class="btn btn-outline btn-sm" onclick="promptEditTenantRateAdmin('${escapeHtml(t.tenant_id)}', ${t.rate_per_min || 5})" style="font-size:0.72rem; padding:4px 8px;">✏️ Rate</button>
+            <button class="btn btn-outline btn-sm" onclick="promptEditTenantPassword('${escapeHtml(t.tenant_id)}', '${escapeHtml(t.business_name)}')" style="font-size:0.72rem; padding:4px 8px; border-color:#818CF8; color:#818CF8;" title="Reset client login password">🔑 Password</button>
             <button class="btn btn-primary btn-sm" onclick="openClientDashboard('${escapeHtml(t.tenant_id)}')" style="font-size:0.72rem; padding:4px 8px;">Workspace →</button>
           </td>
         </tr>
@@ -173,8 +191,8 @@ function promptTopupReseller(resellerId) {
     value: '1000',
     prefix: '₹',
     suffix: 'INR',
-    step: '100',
-    min: '50',
+    step: 'any',
+    min: '1',
     presets: [
       { label: '+₹500', value: 500 },
       { label: '+₹1,000', value: 1000 },
@@ -218,8 +236,8 @@ function promptEditResellerRate(resellerId, currentRate) {
     value: Number(currentRate || 3.0).toFixed(2),
     prefix: '₹',
     suffix: '/min',
-    step: '0.25',
-    min: '0.50',
+    step: 'any',
+    min: '0.01',
     presets: [
       { label: '₹2.50/m', value: 2.50 },
       { label: '₹3.00/m', value: 3.00 },
@@ -254,6 +272,42 @@ function promptEditResellerRate(resellerId, currentRate) {
   });
 }
 
+function promptEditResellerPassword(resellerId, companyName) {
+  openInputModal({
+    title: 'Reset Reseller Partner Password',
+    subtitle: `Set portal login password for agency partner: ${companyName || resellerId}`,
+    label: 'New Login Password',
+    value: '',
+    prefix: '🔑',
+    suffix: '',
+    inputType: 'text',
+    placeholder: 'Enter new partner password (min 4 chars)',
+    hint: 'This password is required for the reseller partner to log into their agency portal.',
+    confirmText: 'Save Reseller Password 🔐',
+    onConfirm: async (newPwd) => {
+      if (!newPwd || newPwd.trim().length < 4) {
+        showToast('Password must be at least 4 characters long.', false);
+        return;
+      }
+      try {
+        const res = await adminFetch(`/api/v1/admin/resellers/${encodeURIComponent(resellerId)}/password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: newPwd.trim() })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`✓ Password successfully updated for ${companyName || resellerId}`);
+        } else {
+          showToast(data.detail || data.message || 'Failed to update reseller password', false);
+        }
+      } catch (e) {
+        showToast('Error updating password: ' + e.message, false);
+      }
+    }
+  });
+}
+
 function promptTopupTenantAdmin(tenantId) {
   openInputModal({
     title: 'Top Up Tenant Wallet Credit',
@@ -262,8 +316,8 @@ function promptTopupTenantAdmin(tenantId) {
     value: '500',
     prefix: '₹',
     suffix: 'INR',
-    step: '50',
-    min: '10',
+    step: 'any',
+    min: '1',
     presets: [
       { label: '+₹250', value: 250 },
       { label: '+₹500', value: 500 },
@@ -306,8 +360,8 @@ function promptEditTenantRateAdmin(tenantId, currentRate) {
     value: Number(currentRate || 5.0).toFixed(2),
     prefix: '₹',
     suffix: '/min',
-    step: '0.25',
-    min: '0.50',
+    step: 'any',
+    min: '0.01',
     presets: [
       { label: '₹3.50/m', value: 3.50 },
       { label: '₹4.50/m', value: 4.50 },
@@ -337,6 +391,42 @@ function promptEditTenantRateAdmin(tenantId, currentRate) {
         }
       } catch (e) {
         showToast(e.message, false);
+      }
+    }
+  });
+}
+
+function promptEditTenantPassword(tenantId, businessName) {
+  openInputModal({
+    title: 'Reset Client Workspace Password',
+    subtitle: `Set portal login password for client: ${businessName || tenantId}`,
+    label: 'New Login Password',
+    value: '',
+    prefix: '🔑',
+    suffix: '',
+    inputType: 'text',
+    placeholder: 'Enter new client password (min 4 chars)',
+    hint: 'This password is required for the client business to log into their tenant portal.',
+    confirmText: 'Save Client Password 🔐',
+    onConfirm: async (newPwd) => {
+      if (!newPwd || newPwd.trim().length < 4) {
+        showToast('Password must be at least 4 characters long.', false);
+        return;
+      }
+      try {
+        const res = await adminFetch(`/api/v1/admin/tenants/${encodeURIComponent(tenantId)}/password`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: newPwd.trim() })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          showToast(`✓ Password successfully updated for ${businessName || tenantId}`);
+        } else {
+          showToast(data.detail || data.message || 'Failed to update client password', false);
+        }
+      } catch (e) {
+        showToast('Error updating password: ' + e.message, false);
       }
     }
   });
@@ -519,6 +609,7 @@ async function submitOnboardTenantAdmin(e) {
   const initialCredit = parseFloat(document.getElementById('adm-tnt-credit')?.value || '500.00');
   const advisor = document.getElementById('adm-tnt-advisor')?.value.trim() || 'Customer Advisor';
   const esc = document.getElementById('adm-tnt-esc')?.value.trim() || '+917022721098';
+  const password = document.getElementById('adm-tnt-pwd')?.value.trim() || 'tenant123';
 
   if (!bizName || !email) {
     showToast('Company name and work email are required', false);
@@ -532,6 +623,7 @@ async function submitOnboardTenantAdmin(e) {
       body: JSON.stringify({
         business_name: bizName,
         email: email,
+        password: password,
         reseller_id: resellerId === 'direct' ? null : resellerId,
         plan: plan,
         rate_per_min: retailRate,

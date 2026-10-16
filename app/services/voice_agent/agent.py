@@ -445,6 +445,8 @@ class VoiceAgent:
         """
         session = self.session
         state = session["state"]
+        if state == "COMPLETED":
+            return
         user_clean = user_speech.strip()
         turn_idx = session["turn_index"]
 

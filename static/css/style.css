@@ -204,6 +204,8 @@ body {
   cursor: pointer;
   text-align: left;
   width: 100%;
+  text-decoration: none;
+  box-sizing: border-box;
   transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
   font-family: inherit;
 }
@@ -2111,4 +2113,124 @@ table.data-table tr:hover td {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* ========================================================================
+   DOCUMENTATION SECTION & HUB STYLES
+   ======================================================================== */
+.docs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.docs-section {
+  display: none;
+}
+
+.docs-section.active {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  animation: fadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.docs-card {
+  background: #FFFFFF;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px 28px;
+  box-shadow: 0 1px 3px rgba(35, 25, 15, 0.03);
+}
+
+.docs-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  flex-wrap: wrap;
+}
+
+.docs-card-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.docs-card-desc {
+  font-size: 0.84rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 4px 0 0 0;
+}
+
+.docs-grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.docs-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.docs-callout {
+  border-radius: 12px;
+  padding: 16px 20px;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.docs-callout-info {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  color: #3730A3;
+}
+
+.docs-callout-success {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  color: #065F46;
+}
+
+.docs-callout-warning {
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.25);
+  color: #92400E;
+}
+
+.docs-code-box {
+  background: #18181B;
+  color: #F4F4F5;
+  border-radius: 10px;
+  padding: 16px 20px;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.docs-code-box code {
+  color: #38BDF8;
+  font-family: inherit;
+}
+
+.docs-badge-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
 }

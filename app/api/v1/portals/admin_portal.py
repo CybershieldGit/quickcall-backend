@@ -39,6 +39,9 @@ class ResellerCreateRequest(BaseModel):
 class ResellerRateUpdateRequest(BaseModel):
     wholesale_rate_per_min: float
 
+class PasswordUpdateRequest(BaseModel):
+    password: str
+
 class WalletTopupRequest(BaseModel):
     amount: float
     notes: Optional[str] = "Admin top-up"
@@ -53,6 +56,7 @@ class DirectClientCreateRequest(BaseModel):
 class AdminTenantCreateRequest(BaseModel):
     business_name: str
     email: str
+    password: Optional[str] = "tenant123"
     reseller_id: Optional[str] = None  # None or empty string for direct client
     plan: str = "growth"  # starter | growth | enterprise
     rate_per_min: float = 5.00
@@ -341,6 +345,26 @@ def topup_reseller_wallet(reseller_id: str, req: WalletTopupRequest, admin_user:
         return {"status": "success", "message": f"Added ₹{req.amount:.2f} to reseller wallet.", "new_balance": round(new_bal, 2)}
 
 
+@admin_guard.post("/resellers/{reseller_id}/password")
+def update_reseller_password(reseller_id: str, req: PasswordUpdateRequest, admin_user: Dict[str, Any] = Depends(get_current_admin)):
+    """SuperAdmin updates or resets reseller partner login password."""
+    if not req.password or len(req.password.strip()) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long.")
+    with sync_engine.connect() as conn:
+        reseller = conn.execute(
+            text("SELECT reseller_id, company_name FROM resellers WHERE reseller_id = :rid"),
+            {"rid": reseller_id}
+        ).fetchone()
+        if not reseller:
+            raise HTTPException(status_code=404, detail="Reseller not found.")
+        conn.execute(
+            text("UPDATE resellers SET password_hash = :pwd WHERE reseller_id = :rid"),
+            {"pwd": hash_password(req.password.strip()), "rid": reseller_id}
+        )
+        conn.commit()
+    return {"status": "success", "message": f"Password successfully updated for reseller '{reseller[1]}' ({reseller_id})."}
+
+
 # -----------------------------------------------------------------------------
 # 4. Master Tenants Management (Control & Monitoring over ALL Tenants)
 # -----------------------------------------------------------------------------
@@ -422,12 +446,13 @@ def admin_create_tenant(req: AdminTenantCreateRequest):
                 assigned_did = f"+9173{uuid.uuid4().hex[:8].ljust(8, '0')[:8]}"
 
         conn.execute(text("""
-            INSERT INTO tenants (tenant_id, business_name, email, api_key, status, plan, telephony_mode, reseller_id, rate_per_min, wallet_balance)
-            VALUES (:tid, :name, :email, :key, 'active', :plan, 'master_pool', :rid, :rate, :bal)
+            INSERT INTO tenants (tenant_id, business_name, email, password_hash, api_key, status, plan, telephony_mode, reseller_id, rate_per_min, wallet_balance)
+            VALUES (:tid, :name, :email, :pwd, :key, 'active', :plan, 'master_pool', :rid, :rate, :bal)
         """), {
             "tid": tenant_id,
             "name": req.business_name,
             "email": req.email,
+            "pwd": hash_password(req.password.strip() if req.password else "tenant123"),
             "key": api_key,
             "plan": req.plan,
             "rid": reseller_id,
@@ -523,6 +548,26 @@ def update_tenant_rate_admin(tenant_id: str, req: TenantRateUpdateRequest):
         if res.rowcount == 0:
             raise HTTPException(status_code=404, detail="Tenant not found.")
         return {"status": "success", "message": f"Rate updated to ₹{req.rate_per_min:.2f}/min."}
+ 
+ 
+@admin_guard.post("/tenants/{tenant_id}/password")
+def update_tenant_password(tenant_id: str, req: PasswordUpdateRequest, admin_user: Dict[str, Any] = Depends(get_current_admin)):
+    """SuperAdmin updates or resets tenant client login password."""
+    if not req.password or len(req.password.strip()) < 4:
+        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long.")
+    with sync_engine.connect() as conn:
+        tenant = conn.execute(
+            text("SELECT tenant_id, business_name FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id}
+        ).fetchone()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant workspace not found.")
+        conn.execute(
+            text("UPDATE tenants SET password_hash = :pwd WHERE tenant_id = :tid"),
+            {"pwd": hash_password(req.password.strip()), "tid": tenant_id}
+        )
+        conn.commit()
+    return {"status": "success", "message": f"Password successfully updated for tenant '{tenant[1]}' ({tenant_id})."}
 
 
 @admin_guard.get("/direct-clients")

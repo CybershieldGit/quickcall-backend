@@ -180,11 +180,13 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
         active_lang = agent.session.get("language") if agent and hasattr(agent, "session") else None
         cached = is_tts_cached(clean_text, target_sample_rate=8000, language_code=active_lang)
         if call_id in SESSIONS:
-            SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(clean_text)
+            sess_data = SESSIONS[call_id]
+            sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(clean_text)
             if cached:
-                SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(clean_text)
+                sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(clean_text)
             else:
-                SESSIONS[call_id]["tts_billable_characters"] = SESSIONS[call_id].get("tts_billable_characters", 0) + len(clean_text)
+                sess_data["tts_billable_characters"] = sess_data.get("tts_billable_characters", 0) + len(clean_text)
+            SESSIONS[call_id] = sess_data
         print(f"[SIPStream] Synthesizing speech ({len(clean_text)} chars, cached={cached}, lang={active_lang}): '{clean_text[:60]}...'")
         pacing_start = time.perf_counter()
         pacing_base = 0
@@ -264,8 +266,10 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
         if has_filler:
             print(f"[SIPStream] ⚡ Immediate conversational filler triggered: '{filler_word}' ({len(filler_chunks)} chunks, 0ms latency)")
             if call_id in SESSIONS and filler_word:
-                SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(filler_word)
-                SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(filler_word)
+                sess_data = SESSIONS[call_id]
+                sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(filler_word)
+                sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(filler_word)
+                SESSIONS[call_id] = sess_data
 
         # Master queue receives ordered sentence queues
         sentence_master_queue: asyncio.Queue = asyncio.Queue()
@@ -292,11 +296,13 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
                 active_lang = agent.session.get("language") if agent and hasattr(agent, "session") else None
                 cached = is_tts_cached(clean_s, target_sample_rate=8000, language_code=active_lang)
                 if call_id in SESSIONS:
-                    SESSIONS[call_id]["tts_characters"] = SESSIONS[call_id].get("tts_characters", 0) + len(clean_s)
+                    sess_data = SESSIONS[call_id]
+                    sess_data["tts_characters"] = sess_data.get("tts_characters", 0) + len(clean_s)
                     if cached:
-                        SESSIONS[call_id]["tts_cached_characters"] = SESSIONS[call_id].get("tts_cached_characters", 0) + len(clean_s)
+                        sess_data["tts_cached_characters"] = sess_data.get("tts_cached_characters", 0) + len(clean_s)
                     else:
-                        SESSIONS[call_id]["tts_billable_characters"] = SESSIONS[call_id].get("tts_billable_characters", 0) + len(clean_s)
+                        sess_data["tts_billable_characters"] = sess_data.get("tts_billable_characters", 0) + len(clean_s)
+                    SESSIONS[call_id] = sess_data
                 print(f"[SIPStream] Synthesizing sentence ({len(clean_s)} chars, cached={cached}, lang={active_lang}): '{clean_s[:50]}...'")
                 async for chunk in stream_synthesize_pcm(clean_s, target_sample_rate=8000, language_code=active_lang):
                     if current_gen != playback_generation:

@@ -25,7 +25,7 @@ from app.core.pdf_processor import (
 )
 from app.core import rag_engine
 from app.core.tenant_service import _TENANT_CONFIG_CACHE, clear_did_cache, clear_agent_cache
-from app.core.auth import create_access_token, get_current_tenant_auth, verify_tenant_access
+from app.core.auth import create_access_token, get_current_tenant_auth, verify_tenant_access, verify_password, hash_password
 import ipaddress
 import socket
 
@@ -263,17 +263,46 @@ async def register_tenant(req: TenantRegisterRequest):
     }
 
 
+class TenantLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 @router.post("/login")
-async def login_tenant(tenant_id: str = Form(...)):
-    """Demo login to retrieve tenant workspace."""
+def login_tenant(req: TenantLoginRequest):
+    """Authenticate tenant client via password."""
+    identifier = (req.username or "").strip()
+    pwd = req.password or ""
+
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Tenant ID or registered Email is required.")
+
     with sync_engine.connect() as conn:
         tenant = conn.execute(
-            text("SELECT tenant_id, business_name, email, plan, telephony_mode, status FROM tenants WHERE tenant_id = :tid OR business_name ILIKE :tid LIMIT 1"),
-            {"tid": tenant_id.strip()}
+            text("""
+                SELECT tenant_id, business_name, email, plan, telephony_mode, status, password_hash
+                FROM tenants
+                WHERE tenant_id = :tid OR email = :tid OR business_name ILIKE :tid
+                LIMIT 1
+            """),
+            {"tid": identifier}
         ).fetchone()
 
         if not tenant:
-            raise HTTPException(status_code=404, detail=f"Vendor workspace '{tenant_id}' not found.")
+            raise HTTPException(status_code=404, detail=f"Vendor workspace '{identifier}' not found.")
+
+        stored_hash = tenant[6]
+        # Verify credentials against stored PBKDF2 hash (fallback: default password)
+        if stored_hash:
+            if not pwd or not verify_password(pwd, stored_hash):
+                if not (pwd == "tenant123" and (stored_hash == "tenant123" or verify_password("tenant123", stored_hash))):
+                    raise HTTPException(status_code=401, detail="Invalid tenant login credentials.")
+        else:
+            if pwd and pwd != "tenant123":
+                raise HTTPException(status_code=401, detail="Invalid tenant login credentials.")
+
+        if tenant[5] and tenant[5] != "active":
+            raise HTTPException(status_code=403, detail="Tenant workspace is currently suspended.")
 
         # Fetch assigned phone numbers
         numbers = conn.execute(
@@ -649,7 +678,9 @@ async def get_tenant_details(tenant_id: str):
     with sync_engine.connect() as conn:
         tenant = conn.execute(
             text("""
-                SELECT tenant_id, business_name, email, plan, telephony_mode, status, created_at
+                SELECT tenant_id, business_name, email, plan, telephony_mode, status, created_at,
+                       COALESCE(rate_per_min, 5.0) as rate_per_min,
+                       COALESCE(wallet_balance, 500.0) as wallet_balance
                 FROM tenants 
                 WHERE tenant_id = :tid 
                    OR business_name ILIKE :tid
@@ -811,6 +842,9 @@ async def get_tenant_details(tenant_id: str):
         "persona": persona,
         "knowledge_chunks_count": k_count,
         "total_calls_count": c_count,
+        "rate_per_min": round(float(tenant[7]), 2),
+        "wallet_balance": round(float(tenant[8]), 2),
+        "talktime_minutes_left": round(float(tenant[8]) / max(0.1, float(tenant[7])), 1),
         "agents": agents_list,
         "active_agents_count": len(agents_list),
         "active_counselors_count": len(agents_list)

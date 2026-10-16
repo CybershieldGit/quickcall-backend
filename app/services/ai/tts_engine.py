@@ -62,7 +62,8 @@ def is_tts_cached(text: str, target_sample_rate: int = 8000, language_code: Opti
     wet_mix = getattr(settings, "OFFICE_ACOUSTICS_WET", 0.0)
     use_headset = getattr(settings, "ENABLE_HEADSET_OFFICE_SOUND", False)
     amb_level = getattr(settings, "OFFICE_AMBIENCE_LEVEL", 0.0) if use_headset else 0.0
-    cache_key = f"{clean_text.lower().strip()}_{target_sample_rate}_{language_code or ''}_{speaker}_{engine}_{use_acoustics}_{wet_mix}_{use_headset}_{amb_level}"
+    eff_lang = "dg" if engine in ("deepgram", "deepgram-aura") else _detect_sarvam_language(clean_text)
+    cache_key = f"{clean_text.lower().strip()}_{target_sample_rate}_{eff_lang}_{speaker}_{engine}_{use_acoustics}_{wet_mix}_{use_headset}_{amb_level}"
     return cache_key in _AUDIO_CHUNK_CACHE
 
 
@@ -70,10 +71,12 @@ async def warmup_tts():
     """Pre-warms persistent TLS connection to TTS and pre-caches common greetings and emergency fallbacks for 0ms, 0-cost playback."""
     try:
         common_greetings = [
-            # Active tenant greetings
+            # Active tenant greetings (canonical admissions & placement)
+            "Hello, I am Aanya from iDigital Studies, how can I help you with course admissions today?",
             "Hello, I am Aanya from iDigital Studies, how can I help you?",
             "Hello! Welcome to iDigitalStudies admissions office. How can I help you today?",
             "Namaste! iDigitalStudies mein aapka swagat hai. Main aapki kya madad kar sakti hoon?",
+            "Hello, I am Rohan, Placement Counselor at iDigital Studies. How can I assist you with internship and job placement queries today?",
             "Hello, I am Rohan from Phono Tel, how can I help you?",
             # Language switch confirmations
             "Ji bilkul! Ab main Hindi mein baat karungi. Aap digital marketing course ke baare mein kya janna chahte hain?",
@@ -81,12 +84,47 @@ async def warmup_tts():
             # Common affirmative / follow-up transitions
             "Ji bilkul, main aapko details batati hoon.",
             "Sure, let me check that for you.",
+            "Sure, please go ahead and tell me what you would like to know about our digital marketing courses or admissions.",
+            # Interactive Brochure Dispatch Flow (WhatsApp / Email)
+            "I'd be happy to send you the brochure! Would you like me to send it on WhatsApp or via Email?",
+            "Main aapko brochure zaroor bhej sakti hoon! Kya aap isse WhatsApp par chahte hain ya Email par?",
+            "Sure! Please say your email address after the beep, and I will note it down.",
+            "Ji bilkul! Kripya beep ke baad apna email address batayein, main note kar loongi.",
+            "Certainly! Could you please share your 10-digit WhatsApp number?",
+            "Ji bilkul! Kripya apna 10-digit WhatsApp number bataiye?",
+            "Please say your email address clearly after the beep, for example name at gmail dot com.",
+            "Kripya beep ke baad apna email address dobara batayein, jaise naam at gmail dot com.",
+            "Could you please tell me if you prefer WhatsApp or Email for receiving the brochure?",
+            "Kripya batayein, kya aap brochure WhatsApp par chahte hain ya Email par?",
+            "Perfect! I have sent the brochure to your Email. You should receive it momentarily. Is there anything else about our courses I can assist you with?",
+            "Perfect! I have sent the brochure to your WhatsApp. You should receive it momentarily. Is there anything else about our courses I can assist you with?",
+            "Bahut badhiya! Maine brochure aapke Email par bhej diya hai. Yeh aapko abhi mil jayega. Aur batayein, hamare courses ke baare mein aap aur kya janna chahte hain?",
+            "Bahut badhiya! Maine brochure aapke WhatsApp par bhej diya hai. Yeh aapko abhi mil jayega. Aur batayein, hamare courses ke baare mein aap aur kya janna chahte hain?",
+            "No problem at all! Feel free to ask anything else about our courses, or let me know how I can assist you.",
+            "Koi baat nahi! Courses ya admissions ke baare mein aapka koi aur sawal ho to zaroor batayein.",
+            # Common Farewells
+            "Have a wonderful day ahead, goodbye!",
+            "Thank you for contacting IDigital studies! Feel free to reach out anytime. Have a wonderful day ahead, goodbye!",
+            "Have a great day!",
             # Emergency fail-safes
             get_graceful_transfer_message("en-IN"),
             get_graceful_transfer_message("hi-IN"),
             get_inaudible_prompt_message("en-IN"),
             get_inaudible_prompt_message("hi-IN"),
         ]
+
+        # Dynamically query active agent greetings from DB
+        try:
+            from app.db.session import sync_engine
+            from sqlalchemy import text
+            with sync_engine.connect() as conn:
+                rows = conn.execute(text("SELECT greeting FROM agents WHERE is_active = true")).fetchall()
+                for r in rows:
+                    if r[0] and r[0].strip() and r[0].strip() not in common_greetings:
+                        common_greetings.append(r[0].strip())
+        except Exception as db_err:
+            print(f"[TTSEngine] DB agent greetings warmup skip: {db_err}")
+
         for greeting in common_greetings:
             async for _ in stream_synthesize_pcm(greeting, target_sample_rate=8000):
                 pass
@@ -533,7 +571,8 @@ async def stream_synthesize_pcm(text: str, target_sample_rate: int = 8000, langu
     wet_mix = getattr(settings, "OFFICE_ACOUSTICS_WET", 0.0)
     use_headset = getattr(settings, "ENABLE_HEADSET_OFFICE_SOUND", False)
     amb_level = getattr(settings, "OFFICE_AMBIENCE_LEVEL", 0.0) if use_headset else 0.0
-    cache_key = f"{clean_text.lower().strip()}_{target_sample_rate}_{language_code or ''}_{speaker}_{engine}_{use_acoustics}_{wet_mix}_{use_headset}_{amb_level}"
+    eff_lang = "dg" if engine in ("deepgram", "deepgram-aura") else _detect_sarvam_language(clean_text)
+    cache_key = f"{clean_text.lower().strip()}_{target_sample_rate}_{eff_lang}_{speaker}_{engine}_{use_acoustics}_{wet_mix}_{use_headset}_{amb_level}"
 
     # 0. Check in-memory audio chunk cache (0ms latency, 0 API cost)
     if cache_key in _AUDIO_CHUNK_CACHE:
@@ -615,7 +654,7 @@ async def stream_synthesize_pcm(text: str, target_sample_rate: int = 8000, langu
         # 3. Primary when sarvam (Production) OR Indic text fallback
         if (engine == "sarvam" or (engine != "deepgram" and is_indic_text(clean_text))) and getattr(settings, "SARVAM_API_KEY", None):
             sarvam_emitted = False
-            async for chunk in _stream_sarvam_ws_pcm(clean_text, target_sample_rate=target_sample_rate, language_code=language_code):
+            async for chunk in _stream_sarvam_ws_pcm(clean_text, target_sample_rate=target_sample_rate, language_code=eff_lang):
                 sarvam_emitted = True
                 yield chunk
             if sarvam_emitted:

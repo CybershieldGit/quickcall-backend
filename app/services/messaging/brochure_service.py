@@ -387,18 +387,28 @@ async def send_email_message(
                 part2 = MIMEText(body_html, "html")
                 msg.attach(part2)
 
-            clean_pwd = (settings.SMTP_PASSWORD or "").replace(" ", "").strip()
-            with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=15) as server:
-                server.ehlo()
-                server.starttls()
-                server.ehlo()
-                server.login(settings.SMTP_USER, clean_pwd)
-                server.sendmail(msg["From"], [to_email], msg.as_string())
+            clean_pwd = (settings.SMTP_PASSWORD or "").strip("'\"").replace(" ", "").strip()
+            port = int(settings.SMTP_PORT or 587)
+            
+            if port == 465:
+                with smtplib.SMTP_SSL(settings.SMTP_HOST, 465, timeout=15) as server:
+                    server.login(settings.SMTP_USER, clean_pwd)
+                    server.sendmail(msg["From"], [to_email], msg.as_string())
+            else:
+                with smtplib.SMTP(settings.SMTP_HOST, port, timeout=15) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.ehlo()
+                    server.login(settings.SMTP_USER, clean_pwd)
+                    server.sendmail(msg["From"], [to_email], msg.as_string())
 
         try:
             await asyncio.to_thread(_send_smtp_sync)
             logger.info(f"✅ [SMTP Email] Successfully dispatched to {to_email}")
             return {"status": "delivered", "provider": "smtp", "channel": "email", "destination": to_email}
+        except smtplib.SMTPAuthenticationError as auth_err:
+            logger.error(f"❌ [SMTP Authentication Error 535] Invalid credentials for {settings.SMTP_USER}: {auth_err}")
+            logger.warning("💡 [Gmail App Password Required] Google rejects regular account passwords. Generate a new 16-character App Password at https://myaccount.google.com/apppasswords for this specific account.")
         except Exception as e:
             logger.error(f"❌ [SMTP Exception] Failed to deliver email via SMTP: {e}")
             logger.warning("💡 [SMTP Diagnosis] If using Gmail, 'Connection unexpectedly closed' occurs when Google rejects your password (535 5.7.8 BadCredentials). Make sure you are using a dedicated 16-character Google App Password (https://myaccount.google.com/apppasswords) with 2FA enabled on the account.")
