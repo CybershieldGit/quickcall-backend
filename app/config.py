@@ -1,7 +1,29 @@
 import os
+import hmac
+import hashlib
+import secrets
+import logging
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+# Real environment variables take precedence over .env (standard for containers / CI)
+load_dotenv(override=False)
+
+_config_logger = logging.getLogger("qwickcall.config")
+_IS_PROD_ENV = os.getenv("ENVIRONMENT", "development").lower() in ("production", "prod")
+
+
+def _required_secret(name: str) -> str:
+    """Returns a secret from env. Refuses to start in production without it; uses an ephemeral value in dev."""
+    value = os.getenv(name, "").strip()
+    placeholder = any(p in value.lower() for p in ("generate_a_secure", "change_in_prod", "your_", "changeme"))
+    if value and not placeholder and len(value) >= 32:
+        return value
+    if value:
+        _config_logger.warning(f"{name} looks like a placeholder or is shorter than 32 characters; ignoring it.")
+    if _IS_PROD_ENV:
+        raise RuntimeError(f"{name} must be set in the environment when ENVIRONMENT=production.")
+    _config_logger.warning(f"{name} is not set; using a random per-process value (development only).")
+    return secrets.token_urlsafe(48)
 
 class Settings:
     PROJECT_NAME: str = "Enterprise Voice Agent Platform (iDigitalStudies)"
@@ -13,10 +35,30 @@ class Settings:
     SYNC_DATABASE_URL: str = os.getenv("SYNC_DATABASE_URL", "sqlite:///qwickcall.db")
 
     # Security & Authentication
-    JWT_SECRET_KEY: str = os.getenv("JWT_SECRET_KEY", "qwickcall_enterprise_secret_key_change_in_prod")
+    JWT_SECRET_KEY: str = _required_secret("JWT_SECRET_KEY")
     JWT_ALGORITHM: str = "HS256"
     JWT_EXPIRE_MINUTES: int = int(os.getenv("JWT_EXPIRE_MINUTES", "1440"))  # 24 hours
     ALLOWED_ORIGINS: str = os.getenv("ALLOWED_ORIGINS", "*")
+
+    # Key for encrypting tenant-supplied secrets (Exotel token, SMTP password) at rest.
+    # Defaults to a key derived from JWT_SECRET_KEY; set explicitly so JWT rotation doesn't orphan stored secrets.
+    SECRETS_ENCRYPTION_KEY: str = os.getenv("SECRETS_ENCRYPTION_KEY", "")
+
+    # Shared secret appended as ?token= to Exotel applet / webhook URLs. When set, unauthenticated
+    # Exotel webhooks and media-stream WebSockets are rejected.
+    EXOTEL_WEBHOOK_TOKEN: str = os.getenv("EXOTEL_WEBHOOK_TOKEN", "")
+
+    # Meta app secret used to verify X-Hub-Signature-256 on WhatsApp webhooks
+    WHATSAPP_APP_SECRET: str = os.getenv("WHATSAPP_APP_SECRET", "")
+
+    # Hard cap on a single call's length (toll-fraud / runaway-cost guard)
+    MAX_CALL_DURATION_SECONDS: int = int(os.getenv("MAX_CALL_DURATION_SECONDS", "900"))
+
+    # Upload limits
+    MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+
+    # Verify the Asterisk WSS certificate (disable only for a self-signed lab PBX)
+    RPDIGITAL_SIP_TLS_VERIFY: bool = os.getenv("RPDIGITAL_SIP_TLS_VERIFY", "true").lower() in ("true", "1", "yes")
 
     # API Keys
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
@@ -33,7 +75,13 @@ class Settings:
     EXOTEL_SUBDOMAIN: str = os.getenv("EXOTEL_SUBDOMAIN", "api.exotel.com")
     EXOTEL_CALLER_ID: str = os.getenv("EXOTEL_CALLER_ID", "")
     EXOTEL_APP_ID: str = os.getenv("EXOTEL_APP_ID", "")
-    DEFAULT_ESCALATION_NUMBER: str = os.getenv("DEFAULT_ESCALATION_NUMBER", "+919876543210").replace(" ", "").replace("-", "").strip()
+    raw_esc = os.getenv("DEFAULT_ESCALATION_NUMBER", "").replace(" ", "").replace("-", "").strip()
+    # Platform-wide human fallback for transfers when a tenant/agent has none. Empty disables the fallback.
+    DEFAULT_ESCALATION_NUMBER: str = raw_esc if len(raw_esc) >= 10 else ""
+
+    # Tenant that serves traffic which can't be attributed to one (unknown DID, legacy widget without
+    # tenant_id). Empty means such traffic is rejected instead of being billed to an arbitrary tenant.
+    DEFAULT_TENANT_ID: str = os.getenv("DEFAULT_TENANT_ID", "").strip().lower()
 
     # RP Digital / Asterisk WebRTC SIP Configuration
     RPDIGITAL_ASTERISK_HOST: str = os.getenv("RPDIGITAL_ASTERISK_HOST", "kenyavoice.rpdigitalphone.com")
@@ -96,14 +144,15 @@ class Settings:
     PLATFORM_BASE_COST_PER_MIN: float = float(os.getenv("PLATFORM_BASE_COST_PER_MIN", "2.00"))
 
     # Platform Owner / Admin Credentials
+    # ADMIN_PASSWORD has no default: when unset, the env-based owner login is disabled
     ADMIN_EMAIL: str = os.getenv("ADMIN_EMAIL", "admin@qwickcall.ai")
-    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "admin123")
+    ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "")
 
     # Messaging & Brochure Dispatch (WhatsApp & Email)
     WHATSAPP_PROVIDER: str = os.getenv("WHATSAPP_PROVIDER", "mock")  # mock, meta, twilio
     WHATSAPP_META_TOKEN: str = os.getenv("WHATSAPP_META_TOKEN", "")
     WHATSAPP_PHONE_NUMBER_ID: str = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
-    WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "qwickcall_webhook_token")
+    WHATSAPP_VERIFY_TOKEN: str = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
     TWILIO_ACCOUNT_SID: str = os.getenv("TWILIO_ACCOUNT_SID", "")
     TWILIO_AUTH_TOKEN: str = os.getenv("TWILIO_AUTH_TOKEN", "")
     TWILIO_WHATSAPP_FROM: str = os.getenv("TWILIO_WHATSAPP_FROM", "+14155238886")
@@ -113,15 +162,21 @@ class Settings:
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_USER: str = os.getenv("SMTP_USER", "")
     SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
-    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "admissions@idigitalstudies.com")
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "")
     SENDGRID_API_KEY: str = os.getenv("SENDGRID_API_KEY", "")
-    SENDGRID_FROM_EMAIL: str = os.getenv("SENDGRID_FROM_EMAIL", "admissions@idigitalstudies.com")
+    SENDGRID_FROM_EMAIL: str = os.getenv("SENDGRID_FROM_EMAIL", "")
 
     # Default Brochure Details
-    DEFAULT_BROCHURE_URL: str = os.getenv("DEFAULT_BROCHURE_URL", "https://idigitalstudies.com/assets/brochure.pdf")
+    DEFAULT_BROCHURE_URL: str = os.getenv("DEFAULT_BROCHURE_URL", "")
     DEFAULT_BROCHURE_TITLE: str = os.getenv("DEFAULT_BROCHURE_TITLE", "Course Curriculum & Information Brochure")
 
     # Conversational Fillers Toggle (Disabled by default to avoid unnatural/canned prefixes)
     ENABLE_CONVERSATIONAL_FILLERS: bool = os.getenv("ENABLE_CONVERSATIONAL_FILLERS", "false").lower() in ("true", "1", "yes")
+
+    @property
+    def INTERNAL_BRIDGE_TOKEN(self) -> str:
+        """Token the in-process SIP client presents to the /sip/stream loopback WebSocket (stable across workers)."""
+        return hmac.new(self.JWT_SECRET_KEY.encode(), b"qwickcall-sip-bridge", hashlib.sha256).hexdigest()
+
 
 settings = Settings()

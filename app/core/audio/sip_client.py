@@ -14,7 +14,7 @@ import fractions
 import base64
 import asyncio
 import traceback
-from typing import Optional, Dict, Any, Set
+from typing import Optional, Dict, Any, Set, List
 import websockets
 
 
@@ -291,8 +291,10 @@ class AsteriskSipClient:
     async def _run_client_loop(self):
         uri = f"wss://{self.host}:{self.port}{self.path}"
         ssl_ctx = ssl.create_default_context()
-        ssl_ctx.check_hostname = False
-        ssl_ctx.verify_mode = ssl.CERT_NONE
+        if not settings.RPDIGITAL_SIP_TLS_VERIFY:
+            # Lab/self-signed PBX only: disabling verification exposes SIP signalling to MITM
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
 
         async with websockets.connect(uri, ssl=ssl_ctx, subprotocols=["sip"], ping_interval=20, ping_timeout=20) as ws:
             self.ws = ws
@@ -931,10 +933,11 @@ class AsteriskSipClient:
         clean_caller = urllib.parse.quote(str(caller or "unknown").strip())
         clean_called = urllib.parse.quote(str(called or "").strip().replace(" ", ""))
         clean_tenant = urllib.parse.quote(str(tenant_id or "").strip())
-        fastapi_url = f"ws://127.0.0.1:8001/sip/stream?call_id={clean_call_id}&caller={clean_caller}&called={clean_called}&tenant_id={clean_tenant}"
+        fastapi_url = f"ws://127.0.0.1:{settings.PORT}/sip/stream?call_id={clean_call_id}&caller={clean_caller}&called={clean_called}&tenant_id={clean_tenant}"
         try:
             _log_sip(f"[AsteriskSIP] Connecting to FastAPI WebSocket bridge: {fastapi_url}")
-            async with websockets.connect(fastapi_url) as ws:
+            bridge_url = f"{fastapi_url}&bridge_token={settings.INTERNAL_BRIDGE_TOKEN}"
+            async with websockets.connect(bridge_url) as ws:
                 _log_sip(f"[AsteriskSIP] ✅ FastAPI /sip/stream bridge connected successfully for call {call_id}!")
                 self._fastapi_bridges[call_id] = ws
                 # 1. Send start event
@@ -1031,7 +1034,8 @@ class AsteriskSipClient:
     async def make_outbound_call(
         self,
         target_phone: str,
-        tenant_id: str = "idigitalstudies"
+        tenant_id: str = "idigitalstudies",
+        caller_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Initiates an outbound SIP call via RP Digital Asterisk PBX with WebRTC AI voice bridge.
@@ -1059,10 +1063,11 @@ class AsteriskSipClient:
 
         call_id = f"sip_out_{uuid.uuid4().hex[:12]}"
         from_tag = uuid.uuid4().hex[:8]
+        from_did = caller_id or self.did_number or self.username or "+917935486072"
         answered_event = asyncio.Event()
         early_media_event = asyncio.Event()
 
-        _log_sip(f"\n📞 [AsteriskSIP] Placing Outbound Call to {clean_target} (dial: {dial_target}) via RP Digital DID {self.did_number or self.username} [Call-ID: {call_id}]")
+        _log_sip(f"\n📞 [AsteriskSIP] Placing Outbound Call to {clean_target} (dial: {dial_target}) via RP Digital DID {from_did} [Call-ID: {call_id}]")
 
         # 1. Initialize WebRTC PeerConnection for outbound call
         pc = RTCPeerConnection()
@@ -1079,7 +1084,7 @@ class AsteriskSipClient:
                     self._bridge_webrtc_to_fastapi(
                         call_id,
                         clean_target,
-                        self.did_number or self.username,
+                        from_did,
                         remote_track,
                         outbound_track,
                         answered_event=answered_event,
@@ -1150,18 +1155,155 @@ class AsteriskSipClient:
             "call_sid": call_id,
             "status": "calling",
             "to": clean_target,
-            "from": self.did_number or "+917935486072",
+            "from": from_did,
             "tenant_id": tenant_id,
             "vendor": "rpdigital"
         }
 
 
-# Singleton Client Instance
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-SIP Extension Registry & Manager
+# Supports running concurrent WebRTC SIP connections for multiple tenant DIDs
+# ─────────────────────────────────────────────────────────────────────────────
 _SIP_CLIENT_INSTANCE: Optional[AsteriskSipClient] = None
+_SIP_CLIENTS: Dict[str, AsteriskSipClient] = {}
 
-def get_asterisk_sip_client() -> AsteriskSipClient:
-    global _SIP_CLIENT_INSTANCE
+def get_asterisk_sip_client(did_or_user: Optional[str] = None) -> AsteriskSipClient:
+    """
+    Returns the AsteriskSipClient for a specific DID number or SIP extension.
+    If not specified or not found, falls back to the master default client.
+    """
+    global _SIP_CLIENT_INSTANCE, _SIP_CLIENTS
+    if did_or_user:
+        clean_key = str(did_or_user).strip()
+        if clean_key in _SIP_CLIENTS:
+            return _SIP_CLIENTS[clean_key]
+        digits = re.sub(r"\D", "", clean_key)
+        if digits in _SIP_CLIENTS:
+            return _SIP_CLIENTS[digits]
+        clean_plus = "+" + digits if digits else ""
+        if clean_plus in _SIP_CLIENTS:
+            return _SIP_CLIENTS[clean_plus]
+
     if _SIP_CLIENT_INSTANCE is None:
         _SIP_CLIENT_INSTANCE = AsteriskSipClient()
+        if _SIP_CLIENT_INSTANCE.username:
+            _SIP_CLIENTS[_SIP_CLIENT_INSTANCE.username] = _SIP_CLIENT_INSTANCE
+        if _SIP_CLIENT_INSTANCE.did_number:
+            _SIP_CLIENTS[_SIP_CLIENT_INSTANCE.did_number] = _SIP_CLIENT_INSTANCE
+            clean_d = re.sub(r"\D", "", _SIP_CLIENT_INSTANCE.did_number)
+            if clean_d:
+                _SIP_CLIENTS[clean_d] = _SIP_CLIENT_INSTANCE
     return _SIP_CLIENT_INSTANCE
+
+
+def get_all_sip_clients() -> List[AsteriskSipClient]:
+    """Returns unique list of all instantiated Asterisk SIP clients."""
+    seen = set()
+    clients = []
+    if _SIP_CLIENT_INSTANCE:
+        seen.add(id(_SIP_CLIENT_INSTANCE))
+        clients.append(_SIP_CLIENT_INSTANCE)
+    for c in _SIP_CLIENTS.values():
+        if id(c) not in seen:
+            seen.add(id(c))
+            clients.append(c)
+    return clients
+
+
+async def start_sip_client_for_credentials(
+    username: str,
+    password: str,
+    did_number: str = "",
+    host: Optional[str] = None,
+    port: Optional[int] = None
+) -> AsteriskSipClient:
+    """Instantiates, registers, and starts a SIP client for a specific DID extension."""
+    global _SIP_CLIENTS
+    clean_user = username.strip()
+    clean_pwd = password.strip() if password else clean_user
+    clean_did = did_number.strip() if did_number else ""
+
+    if clean_user in _SIP_CLIENTS and _SIP_CLIENTS[clean_user].is_running:
+        return _SIP_CLIENTS[clean_user]
+
+    client = AsteriskSipClient(
+        host=host or getattr(settings, "RPDIGITAL_ASTERISK_HOST", "kenyavoice.rpdigitalphone.com"),
+        port=port or getattr(settings, "RPDIGITAL_ASTERISK_PORT", 5000),
+        username=clean_user,
+        password=clean_pwd,
+        did_number=clean_did
+    )
+    _SIP_CLIENTS[clean_user] = client
+    if clean_did:
+        _SIP_CLIENTS[clean_did] = client
+        clean_d = re.sub(r"\D", "", clean_did)
+        if clean_d:
+            _SIP_CLIENTS[clean_d] = client
+
+    asyncio.create_task(client.start())
+    print(f"📞 [Multi-SIP Manager] Registered & launched SIP extension {clean_user} (DID: {clean_did or 'none'})")
+    return client
+
+
+async def start_all_sip_clients():
+    """
+    Launches all active SIP clients on server startup:
+    1. Primary default client from settings / .env
+    2. All active Phonotel/RPDigital SIP extensions configured in PostgreSQL
+    """
+    global _SIP_CLIENT_INSTANCE
+    # 1. Master default client
+    if settings.RPDIGITAL_SIP_USER and settings.RPDIGITAL_SIP_PASSWORD:
+        master = get_asterisk_sip_client()
+        if not master.is_running:
+            asyncio.create_task(master.start())
+            print(f"📞 [Multi-SIP Manager] Master SIP trunk launched: user={settings.RPDIGITAL_SIP_USER} (DID={settings.RPDIGITAL_DID_NUMBER})")
+
+    # 2. Dynamic clients from database
+    try:
+        from app.db.session import sync_engine
+        from sqlalchemy import text
+        with sync_engine.connect() as conn:
+            rows = conn.execute(text("""
+                SELECT DISTINCT number, sip_extension, COALESCE(sip_password, sip_extension) as pwd
+                FROM phone_number_pool 
+                WHERE vendor = 'rpdigital' 
+                  AND sip_extension IS NOT NULL 
+                  AND sip_extension != ''
+                UNION
+                SELECT DISTINCT number, sip_extension, COALESCE(sip_password, sip_extension) as pwd
+                FROM tenant_phone_numbers 
+                WHERE vendor = 'rpdigital' 
+                  AND sip_extension IS NOT NULL 
+                  AND sip_extension != ''
+            """)).fetchall()
+
+            from app.core.secrets_box import decrypt_secret
+            for r in rows:
+                num, ext, pwd = r[0], r[1], r[2]
+                if ext and ext != getattr(settings, "RPDIGITAL_SIP_USER", ""):
+                    try:
+                        resolved_pwd = decrypt_secret(pwd) if pwd else ext
+                        await start_sip_client_for_credentials(
+                            username=ext,
+                            password=resolved_pwd or ext,
+                            did_number=num or ""
+                        )
+                    except Exception as ce:
+                        print(f"⚠️ [Multi-SIP Manager] Error launching extension {ext}: {ce}")
+    except Exception as e:
+        print(f"⚠️ [Multi-SIP Manager] Database discovery warning: {e}")
+
+
+async def stop_all_sip_clients():
+    """Stops all running Asterisk SIP clients gracefully on shutdown."""
+    clients = get_all_sip_clients()
+    for c in clients:
+        try:
+            await c.stop()
+        except Exception:
+            pass
+    print(f"🛑 [Multi-SIP Manager] Stopped {len(clients)} Asterisk SIP client(s).")
+
 

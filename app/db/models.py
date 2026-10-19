@@ -57,6 +57,7 @@ class PhoneNumberPool(Base):
     number = Column(String(32), primary_key=True, index=True)
     vendor = Column(String(32), default="rpdigital")
     sip_extension = Column(String(32), nullable=True)
+    sip_password = Column(String(256), nullable=True)
     status = Column(String(32), default="available")  # available | assigned | reserved
     assigned_tenant_id = Column(String(64), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -83,6 +84,8 @@ class TenantPhoneNumber(Base):
     number = Column(String(32), primary_key=True, index=True)  # E.164 e.g. +917316902643
     tenant_id = Column(String(64), ForeignKey("tenants.tenant_id"), nullable=False, index=True)
     vendor = Column(String(32), default="rpdigital")
+    sip_extension = Column(String(32), nullable=True)
+    sip_password = Column(String(256), nullable=True)
     is_active = Column(Boolean, default=True)
     assigned_agent_id = Column(String(64), nullable=True, index=True)
 

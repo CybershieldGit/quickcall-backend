@@ -7,6 +7,7 @@ Verifies:
 import sys
 import os
 import asyncio
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -14,6 +15,7 @@ from app.services.voice_agent import VoiceAgent
 from app.services.messaging import extract_email_address
 from app.api.v1.chat.chat_router import send_chat_message, ChatMessageRequest
 
+@pytest.mark.anyio
 async def test_voice_and_chat():
     print("Testing Voice Agent turn in new structure...")
     cid = "test_struct_voice_001"

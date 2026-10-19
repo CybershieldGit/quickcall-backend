@@ -24,6 +24,7 @@ from app.core.audio_utils import pcm_rms, OfficeAcousticsFilter
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Response, Request
 
 from app.config import settings
+from app.core.auth import verify_exotel_token
 from app.core.tenant_service import get_tenant_exotel_credentials
 from app.core.voice_agent import (
     VoiceAgent, SESSIONS, _log_call_end, generate_executive_summary, _resolve_tenant_from_did, _resolve_did_route
@@ -183,11 +184,13 @@ async def websocket_exotel_stream(websocket: WebSocket):
     Full-duplex WebSocket handler for Exotel Voicebot Applet.
     Supports 16-bit Linear PCM, sub-second latency, and instant VAD barge-in.
     """
-    await websocket.accept()
-    print("[ExotelStream] Client WebSocket connected.")
-
     # Parse query parameters if passed in URL
     query_params = parse_qs(str(websocket.url.query))
+    if not verify_exotel_token(query_params.get("token", [""])[0]):
+        await websocket.close(code=1008, reason="Invalid stream token")
+        return
+    await websocket.accept()
+    print("[ExotelStream] Client WebSocket connected.")
     url_call_sid = query_params.get("call_sid", [""])[0] or query_params.get("CallSid", [""])[0]
     url_caller = (
         query_params.get("caller", [""])[0] 
@@ -212,7 +215,7 @@ async def websocket_exotel_stream(websocket: WebSocket):
     call_id: str = url_call_sid or f"call_{asyncio.get_event_loop().time()}"
     caller_phone: str = url_caller
     called_phone: str = url_called
-    tenant_id, agent_id = _resolve_did_route(called_phone) if called_phone else ("idigitalstudies", None)
+    tenant_id, agent_id = _resolve_did_route(called_phone)
     agent: Optional[VoiceAgent] = None
 
     # State & Monitoring tracking
@@ -447,8 +450,7 @@ async def websocket_exotel_stream(websocket: WebSocket):
         speaking_start_time = asyncio.get_event_loop().time()
 
         if not agent:
-            res_tenant = _resolve_tenant_from_did(called_phone) or "idigitalstudies"
-            agent = VoiceAgent(call_id=call_id, tenant_id=res_tenant, caller_number=caller_phone)
+            agent = VoiceAgent(call_id=call_id, tenant_id=tenant_id, caller_number=caller_phone, agent_id=agent_id)
 
         # Master queue holding individual sentence queues in strict chronological order
         sentence_master_queue: asyncio.Queue = asyncio.Queue()
@@ -722,6 +724,10 @@ async def websocket_exotel_stream(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive_text()
+            if time.perf_counter() - call_start_time > settings.MAX_CALL_DURATION_SECONDS:
+                print(f"[ExotelStream] ⏱️ Call {call_id} hit MAX_CALL_DURATION_SECONDS; hanging up.")
+                await websocket.close(code=1000, reason="Maximum call duration reached")
+                break
             try:
                 data = json.loads(message)
             except (json.JSONDecodeError, TypeError) as jde:
@@ -792,9 +798,8 @@ async def websocket_exotel_stream(websocket: WebSocket):
                 )
 
                 # Tier-1 Tenant & Agent Resolution
-                tenant_id, agent_id = _resolve_did_route(called_phone) if called_phone else ("idigitalstudies", None)
-                if not tenant_id:
-                    tenant_id = "idigitalstudies"
+                # Unknown DID with no DEFAULT_TENANT_ID yields "", which the wallet check below rejects
+                tenant_id, agent_id = _resolve_did_route(called_phone)
 
                 # Financial Guardrail: Verify prepaid wallet balance before processing call
                 from app.services.tenant.tenant_service import check_tenant_wallet_balance
@@ -802,7 +807,7 @@ async def websocket_exotel_stream(websocket: WebSocket):
                 if not bal_ok:
                     print(f"[ExotelStream] 🛑 Inbound call rejected for {tenant_id}: {bal_msg}")
                     rejection_msg = "Kshama kijiye, is line par baat karne ke liye paryapt credit uplabdh nahi hai. Kripya apne administrator se sampark karein."
-                    playback_task = asyncio.create_task(speak_text(rejection_msg, should_hangup=True))
+                    playback_task = asyncio.create_task(speak_text(rejection_msg, is_final=True))
                     continue
 
                 try:
@@ -948,8 +953,7 @@ async def websocket_exotel_stream(websocket: WebSocket):
                         CallMonitor.stt_result(call_turn_idx, user_text, stt_elapsed_ms)
 
                         if not agent:
-                            tenant_id = _resolve_tenant_from_did(called_phone) or "idigitalstudies"
-                            agent = VoiceAgent(call_id=call_id, tenant_id=tenant_id, caller_number=caller_phone)
+                            agent = VoiceAgent(call_id=call_id, tenant_id=tenant_id, caller_number=caller_phone, agent_id=agent_id)
 
                         if agent and hasattr(agent, "session") and agent.session:
                             from app.core.voice_agent import detect_language_switch_intent

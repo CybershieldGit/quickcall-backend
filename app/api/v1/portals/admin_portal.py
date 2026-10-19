@@ -10,13 +10,18 @@ Handles:
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+import hmac
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 
 from app.config import settings
 from app.db.session import sync_engine
-from app.core.auth import hash_password, verify_password, create_access_token, get_current_admin
+from app.core.auth import (
+    hash_password, check_login_password, validate_new_password, create_access_token, get_current_admin,
+    KNOWN_DEFAULT_PASSWORDS,
+)
+from app.core.rate_limit import rate_limit_request, enforce_rate_limit
 
 router = APIRouter(prefix="/api/v1/admin", tags=["SuperAdmin & Owner Portal"])
 
@@ -32,7 +37,7 @@ class ResellerCreateRequest(BaseModel):
     name: str
     company_name: str
     email: str
-    password: str = "partner123"
+    password: str
     wholesale_rate_per_min: float = 3.00
     initial_wallet_balance: float = 1000.0
 
@@ -56,7 +61,7 @@ class DirectClientCreateRequest(BaseModel):
 class AdminTenantCreateRequest(BaseModel):
     business_name: str
     email: str
-    password: Optional[str] = "tenant123"
+    password: str
     reseller_id: Optional[str] = None  # None or empty string for direct client
     plan: str = "growth"  # starter | growth | enterprise
     rate_per_min: float = 5.00
@@ -78,11 +83,18 @@ class AddNumberToPoolRequest(BaseModel):
 # 1. Admin Authentication
 # -----------------------------------------------------------------------------
 @router.post("/login")
-def admin_login(req: AdminLoginRequest):
+def admin_login(req: AdminLoginRequest, request: Request):
     """Authenticate platform owner / superadmin."""
-    # Check against settings master credentials or admin_users table
-    if req.email == settings.ADMIN_EMAIL and (
-        req.password == settings.ADMIN_PASSWORD or verify_password(req.password, settings.ADMIN_PASSWORD)
+    rate_limit_request(request, "admin_login", limit=5, window_seconds=300)
+    enforce_rate_limit(f"admin_login_account:{(req.email or '').strip().lower()}", limit=10, window_seconds=900)
+
+    # Env-configured owner account (disabled when ADMIN_PASSWORD is unset or a known default)
+    env_pwd = settings.ADMIN_PASSWORD or ""
+    if (
+        env_pwd
+        and env_pwd.lower() not in KNOWN_DEFAULT_PASSWORDS
+        and req.email == settings.ADMIN_EMAIL
+        and (hmac.compare_digest(req.password or "", env_pwd) or check_login_password(req.password, env_pwd))
     ):
         token = create_access_token({"sub": "admin_root", "email": settings.ADMIN_EMAIL, "role": "superadmin"})
         return {
@@ -101,7 +113,7 @@ def admin_login(req: AdminLoginRequest):
             {"email": req.email}
         ).fetchone()
 
-        if row and verify_password(req.password, row[3]):
+        if row and check_login_password(req.password, row[3]):
             token = create_access_token({"sub": row[0], "email": row[2], "role": row[4]})
             return {
                 "status": "success",
@@ -284,7 +296,7 @@ def create_reseller(req: ResellerCreateRequest, admin_user: Dict[str, Any] = Dep
             "name": req.name,
             "company": req.company_name,
             "email": req.email,
-            "pwd": hash_password(req.password),
+            "pwd": hash_password(validate_new_password(req.password)),
             "key": api_key,
             "rate": req.wholesale_rate_per_min,
             "bal": req.initial_wallet_balance,
@@ -348,8 +360,7 @@ def topup_reseller_wallet(reseller_id: str, req: WalletTopupRequest, admin_user:
 @admin_guard.post("/resellers/{reseller_id}/password")
 def update_reseller_password(reseller_id: str, req: PasswordUpdateRequest, admin_user: Dict[str, Any] = Depends(get_current_admin)):
     """SuperAdmin updates or resets reseller partner login password."""
-    if not req.password or len(req.password.strip()) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long.")
+    new_password = validate_new_password(req.password)
     with sync_engine.connect() as conn:
         reseller = conn.execute(
             text("SELECT reseller_id, company_name FROM resellers WHERE reseller_id = :rid"),
@@ -359,7 +370,7 @@ def update_reseller_password(reseller_id: str, req: PasswordUpdateRequest, admin
             raise HTTPException(status_code=404, detail="Reseller not found.")
         conn.execute(
             text("UPDATE resellers SET password_hash = :pwd WHERE reseller_id = :rid"),
-            {"pwd": hash_password(req.password.strip()), "rid": reseller_id}
+            {"pwd": hash_password(new_password), "rid": reseller_id}
         )
         conn.commit()
     return {"status": "success", "message": f"Password successfully updated for reseller '{reseller[1]}' ({reseller_id})."}
@@ -452,7 +463,7 @@ def admin_create_tenant(req: AdminTenantCreateRequest):
             "tid": tenant_id,
             "name": req.business_name,
             "email": req.email,
-            "pwd": hash_password(req.password.strip() if req.password else "tenant123"),
+            "pwd": hash_password(validate_new_password(req.password)),
             "key": api_key,
             "plan": req.plan,
             "rid": reseller_id,
@@ -553,8 +564,7 @@ def update_tenant_rate_admin(tenant_id: str, req: TenantRateUpdateRequest):
 @admin_guard.post("/tenants/{tenant_id}/password")
 def update_tenant_password(tenant_id: str, req: PasswordUpdateRequest, admin_user: Dict[str, Any] = Depends(get_current_admin)):
     """SuperAdmin updates or resets tenant client login password."""
-    if not req.password or len(req.password.strip()) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters long.")
+    new_password = validate_new_password(req.password)
     with sync_engine.connect() as conn:
         tenant = conn.execute(
             text("SELECT tenant_id, business_name FROM tenants WHERE tenant_id = :tid"),
@@ -564,7 +574,7 @@ def update_tenant_password(tenant_id: str, req: PasswordUpdateRequest, admin_use
             raise HTTPException(status_code=404, detail="Tenant workspace not found.")
         conn.execute(
             text("UPDATE tenants SET password_hash = :pwd WHERE tenant_id = :tid"),
-            {"pwd": hash_password(req.password.strip()), "tid": tenant_id}
+            {"pwd": hash_password(new_password), "tid": tenant_id}
         )
         conn.commit()
     return {"status": "success", "message": f"Password successfully updated for tenant '{tenant[1]}' ({tenant_id})."}

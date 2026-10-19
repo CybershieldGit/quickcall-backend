@@ -2,9 +2,12 @@
 Enterprise Voice Agent — State Machine & Call Orchestrator
 States: GREETING -> MAIN_LOOP -> ESCALATION_ATTEMPT -> LEAD_CAPTURE -> COMPLETED
 """
+import logging
 from typing import Dict, Any, Optional, Tuple, List
 
 from app.config import settings
+
+logger = logging.getLogger("qwickcall.voice_agent")
 from app.services.tenant.tenant_service import (
     load_tenant_config, load_agent_config, resolve_tenant_from_did, resolve_did_route,
     get_current_escalation_number, get_tenant_escalation_target,
@@ -982,7 +985,7 @@ class VoiceAgent:
         elif step == "ask_whatsapp_number":
             # Check if user changed their mind to Email
             t_low = user_clean.lower()
-            if any(w in t_low for w in ["email", "mail", "gmail"]):
+            if re.search(r'\b(?:email|e-mail|mail|gmail|yahoo)\b', t_low):
                 brochure_ctx["channel"] = "email"
                 em = extract_email_address(user_clean)
                 if em:
@@ -1029,9 +1032,24 @@ class VoiceAgent:
                 return {"response": reply, "is_final": False, "state": "MAIN_LOOP"}
 
         elif step == "ask_email":
-            # Check if user changed their mind to WhatsApp
+            # Priority 1: Check if caller provided an email address first
+            email_addr = extract_email_address(user_clean)
+            if email_addr:
+                brochure_ctx["destination"] = email_addr
+                dest_speech = format_email_for_speech(email_addr)
+                brochure_ctx["destination_speech"] = dest_speech
+                brochure_ctx["step"] = "confirm_destination"
+                save_session(self.call_id, session)
+                reply = (
+                    f"I've noted {dest_speech}. Just to confirm, should I send the brochure to this email address? Please say yes to confirm."
+                    if is_en else
+                    f"Maine {dest_speech} note kar liya hai. Confirm karne ke liye, kya main brochure isi email par bhej doon? Kripya haan kahein."
+                )
+                return {"response": reply, "is_final": False, "state": "MAIN_LOOP"}
+
+            # Priority 2: Check if caller changed their mind to WhatsApp
             t_low = user_clean.lower()
-            if any(w in t_low for w in ["whatsapp", "whats", "wa", "phone"]):
+            if re.search(r'\b(?:whatsapp|whats\s*app|watsapp|wats\s*app|phone|mobile)\b', t_low):
                 brochure_ctx["channel"] = "whatsapp"
                 ph = extract_phone_number(user_clean)
                 if ph:
@@ -1056,28 +1074,14 @@ class VoiceAgent:
                     )
                     return {"response": reply, "is_final": False, "state": "MAIN_LOOP"}
 
-            email_addr = extract_email_address(user_clean)
-            if email_addr:
-                brochure_ctx["destination"] = email_addr
-                dest_speech = format_email_for_speech(email_addr)
-                brochure_ctx["destination_speech"] = dest_speech
-                brochure_ctx["step"] = "confirm_destination"
-                save_session(self.call_id, session)
-                reply = (
-                    f"I've noted {dest_speech}. Just to confirm, should I send the brochure to this email address? Please say yes to confirm."
-                    if is_en else
-                    f"Maine {dest_speech} note kar liya hai. Confirm karne ke liye, kya main brochure isi email par bhej doon? Kripya haan kahein."
-                )
-                return {"response": reply, "is_final": False, "state": "MAIN_LOOP"}
-            else:
-                session["play_beep"] = True
-                save_session(self.call_id, session)
-                reply = (
-                    "Please say your email address clearly after the beep, for example name at gmail dot com."
-                    if is_en else
-                    "Kripya beep ke baad apna email address dobara batayein, jaise naam at gmail dot com."
-                )
-                return {"response": reply, "is_final": False, "state": "MAIN_LOOP", "play_beep": True}
+            session["play_beep"] = True
+            save_session(self.call_id, session)
+            reply = (
+                "Please say your email address clearly after the beep, for example name at gmail dot com."
+                if is_en else
+                "Kripya beep ke baad apna email address dobara batayein, jaise naam at gmail dot com."
+            )
+            return {"response": reply, "is_final": False, "state": "MAIN_LOOP", "play_beep": True}
 
         elif step == "confirm_destination":
             conf = detect_confirmation_intent(user_clean)
@@ -1089,29 +1093,33 @@ class VoiceAgent:
                 # Dispatch brochure in background safely in both async and sync contexts
                 import asyncio
                 import threading
-                def _dispatch_worker():
-                    try:
-                        asyncio.run(
-                            send_brochure(
-                                tenant_id=self.tenant_id,
-                                channel=channel,
-                                destination=dest,
-                                customer_name=session.get("lead_name") or "Student"
-                            )
-                        )
-                    except Exception as err:
-                        print(f"[Brochure Dispatch Error] {err}")
 
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(
-                        send_brochure(
+                async def _do_dispatch():
+                    try:
+                        res = await send_brochure(
                             tenant_id=self.tenant_id,
                             channel=channel,
                             destination=dest,
                             customer_name=session.get("lead_name") or "Student"
                         )
-                    )
+                        if res.get("status") == "failed":
+                            logger.error(f"❌ [Voice Agent] Brochure dispatch failed: {res.get('error')} (Channel: {channel}, Destination: {dest})")
+                        else:
+                            logger.info(f"✅ [Voice Agent] Brochure dispatched successfully via {res.get('provider')} to {dest}")
+                    except Exception as err:
+                        logger.error(f"❌ [Voice Agent Brochure Exception] {err}")
+                        print(f"❌ [Brochure Dispatch Error] {err}")
+
+                def _dispatch_worker():
+                    try:
+                        asyncio.run(_do_dispatch())
+                    except Exception as err:
+                        logger.error(f"❌ [Brochure Thread Error] {err}")
+                        print(f"[Brochure Dispatch Error] {err}")
+
+                try:
+                    loop = asyncio.get_running_loop()
+                    loop.create_task(_do_dispatch())
                 except RuntimeError:
                     threading.Thread(target=_dispatch_worker, daemon=True).start()
 

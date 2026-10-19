@@ -7,6 +7,7 @@ from app.services.messaging.brochure_service import (
     send_brochure,
     send_whatsapp_message,
     send_email_message,
+    get_tenant_brochure_url,
 )
 
 __all__ = [
@@ -17,4 +18,6 @@ __all__ = [
     "send_brochure",
     "send_whatsapp_message",
     "send_email_message",
+    "get_tenant_brochure_url",
 ]
+

@@ -7,14 +7,16 @@ Handles:
 - Transfer bridge outcome handling
 """
 import json
-from fastapi import APIRouter, Request, Response, Form, Query, BackgroundTasks
+from urllib.parse import urlencode, urlparse
+from fastapi import APIRouter, Request, Response, Form, Query, BackgroundTasks, Depends
 from typing import Optional
 from app.config import settings
+from app.core.auth import require_exotel_token
 from app.core.voice_agent import (
     _resolve_tenant_from_did, _log_call_end, generate_executive_summary, SESSIONS
 )
 
-router = APIRouter(prefix="/exotel", tags=["Exotel Voice Webhooks"])
+router = APIRouter(prefix="/exotel", tags=["Exotel Voice Webhooks"], dependencies=[Depends(require_exotel_token)])
 
 
 @router.api_route("/voicebot-connect", methods=["GET", "POST"])
@@ -23,8 +25,10 @@ async def voicebot_dynamic_connect(request: Request):
     Dynamic endpoint called by Exotel Voicebot Applet.
     Returns the WebSocket endpoint for full-duplex PCM streaming.
     """
-    host = request.headers.get("host") or settings.BASE_URL.replace("https://", "").replace("http://", "")
-    proto = "wss" if ("https" in settings.BASE_URL or request.headers.get("x-forwarded-proto") == "https") else "ws"
+    # Build the stream URL from configuration, never from the client-supplied Host header
+    base = urlparse(settings.BASE_URL)
+    host = base.netloc or "localhost:8001"
+    proto = "wss" if base.scheme == "https" else "ws"
     
     # Query / Form params
     query = request.query_params
@@ -40,7 +44,10 @@ async def voicebot_dynamic_connect(request: Request):
     except Exception:
         pass
 
-    ws_url = f"{proto}://{host}/exotel/stream?call_sid={call_sid}&caller={caller}&called={called}"
+    qs = {"call_sid": call_sid, "caller": caller, "called": called}
+    if settings.EXOTEL_WEBHOOK_TOKEN:
+        qs["token"] = settings.EXOTEL_WEBHOOK_TOKEN
+    ws_url = f"{proto}://{host}/exotel/stream?{urlencode(qs)}"
     
     return {
         "url": ws_url,
@@ -82,13 +89,8 @@ async def exotel_passthru(
             or SESSIONS.get(c_no_91)
         )
 
-    # Fallback to recent session with escalation requested
-    if not sess or not (sess.get("transfer_requested") or sess.get("escalated")):
-        for s_id, s_data in reversed(list(SESSIONS.items())):
-            if isinstance(s_data, dict) and (s_data.get("transfer_requested") or s_data.get("escalated")):
-                sess = s_data
-                print(f"[ExotelPassthru] Matched recent escalated session via fallback: key={s_id}")
-                break
+    # No "most recent escalated session" fallback: it could bridge this caller to another
+    # caller's (possibly another tenant's) escalation target.
 
     if sess and (sess.get("transfer_requested") or sess.get("escalated") or sess.get("state") == "TRANSFERRED"):
         esc_num = sess.get("escalation_number") or settings.DEFAULT_ESCALATION_NUMBER
@@ -185,7 +187,7 @@ async def exotel_transfer_callback(
     try:
         if CallSid:
             sess = SESSIONS.get(CallSid, {})
-            tenant_id = sess.get("tenant_id") or "idigitalstudies"
+            tenant_id = sess.get("tenant_id") or settings.DEFAULT_TENANT_ID
             target_num = sess.get("escalation_number") or settings.DEFAULT_ESCALATION_NUMBER
             caller_num = sess.get("caller_number") or "unknown"
             caller_name = sess.get("lead_name") or "Inbound Caller"

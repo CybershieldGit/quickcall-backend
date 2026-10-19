@@ -3,12 +3,16 @@ Tenant Configuration & DID Resolution Service
 Loads tenant personas, business rules, multi-department team escalation routing,
 and resolves inbound DIDs with Hybrid Telephony support.
 """
-import os
 import json
+import logging
 from typing import Dict, Any, Optional, Tuple
 from sqlalchemy import text
 from app.config import settings
+from app.core.auth import tenant_canonical_alias
+from app.core.secrets_box import decrypt_secret
 from app.db.session import sync_engine
+
+logger = logging.getLogger("qwickcall.tenant")
 
 _TENANT_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
 _AGENT_CONFIG_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -18,20 +22,8 @@ _TENANT_CREDENTIALS_CACHE: Dict[str, Dict[str, str]] = {}
 
 
 def get_current_escalation_number() -> str:
-    """Dynamically read the latest DEFAULT_ESCALATION_NUMBER directly from .env file to avoid stale caching."""
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-    if os.path.exists(env_path):
-        try:
-            with open(env_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("DEFAULT_ESCALATION_NUMBER=") and not line.startswith("#"):
-                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        if val:
-                            return val.replace(" ", "").replace("-", "")
-        except Exception as e:
-            print(f"[Dynamic Env Read Error] {e}")
-    return (getattr(settings, "DEFAULT_ESCALATION_NUMBER", None) or "+919560732274").replace(" ", "").replace("-", "").strip()
+    """Platform-wide fallback escalation number (DEFAULT_ESCALATION_NUMBER); empty when not configured."""
+    return (settings.DEFAULT_ESCALATION_NUMBER or "").replace(" ", "").replace("-", "").strip()
 
 
 def load_agent_config(agent_id: str, tenant_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -59,8 +51,8 @@ def load_agent_config(agent_id: str, tenant_id: Optional[str] = None) -> Optiona
                 return None
 
             tid = row[1]
-            b_name = row[10] or ("iDigitalStudies" if "idigital" in tid else "Customer Care")
-            esc_num = (row[6] or get_current_escalation_number() or "+919560732274").replace(" ", "").replace("-", "").strip()
+            b_name = row[10] or "Customer Care"
+            esc_num = (row[6] or get_current_escalation_number()).replace(" ", "").replace("-", "").strip()
 
             t_cfg = conn.execute(
                 text("SELECT business_rules, guardrail_topics FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
@@ -119,7 +111,7 @@ def load_tenant_config(tenant_id: str, agent_id: Optional[str] = None) -> Option
                     ORDER BY is_default DESC, created_at ASC 
                     LIMIT 1
                 """),
-                {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+                {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
             ).fetchone()
             if ag_row and ag_row[0]:
                 ag_cfg = load_agent_config(ag_row[0], tenant_id)
@@ -144,8 +136,8 @@ def load_tenant_config(tenant_id: str, agent_id: Optional[str] = None) -> Option
                     text("SELECT business_name FROM tenants WHERE tenant_id = :tid LIMIT 1"),
                     {"tid": tenant_id}
                 ).fetchone()
-                b_name = t_row[0] if t_row else ("iDigitalStudies" if tenant_id == "idigitalstudies" else "Customer Care")
-                esc_num = get_current_escalation_number() or "+919560732274"
+                b_name = t_row[0] if t_row else "Customer Care"
+                esc_num = get_current_escalation_number()
                 cfg = {
                     "persona": f"You are a helpful and professional customer advisor for {b_name}.",
                     "business_name": b_name,
@@ -157,8 +149,8 @@ def load_tenant_config(tenant_id: str, agent_id: Optional[str] = None) -> Option
                 return cfg
 
             rules = row[1] if isinstance(row[1], dict) else json.loads(row[1] or "{}")
-            esc_num = (row[2] or get_current_escalation_number() or "+919560732274").replace(" ", "").replace("-", "").strip()
-            b_name = row[4] or ("iDigitalStudies" if tenant_id == "idigitalstudies" else "Customer Care")
+            esc_num = (row[2] or get_current_escalation_number()).replace(" ", "").replace("-", "").strip()
+            b_name = row[4] or "Customer Care"
             cfg = {
                 "persona": row[0],
                 "business_name": b_name,
@@ -174,9 +166,9 @@ def load_tenant_config(tenant_id: str, agent_id: Optional[str] = None) -> Option
 
 
 def normalize_tenant_id(tenant_id: Optional[str]) -> str:
-    """Normalizes tenant alias or returns canonical tenant UID."""
+    """Normalizes tenant alias or returns canonical tenant UID. Empty input maps to DEFAULT_TENANT_ID (may be empty)."""
     if not tenant_id:
-        return "idigitalstudies"
+        return settings.DEFAULT_TENANT_ID
     tid = str(tenant_id).strip().lower()
     if tid in ("ids", "idigitalstudies", "idigital", "i_digital_studies"):
         return "idigitalstudies"
@@ -230,7 +222,7 @@ def resolve_did_route(dialed_number: str) -> Tuple[str, Optional[str]]:
     returns tenant's default agent_id.
     """
     if not dialed_number:
-        return ("idigitalstudies", None)
+        return _default_route()
     cleaned = dialed_number.replace(" ", "").replace("-", "").strip()
 
     if cleaned in _DID_ROUTE_CACHE:
@@ -300,18 +292,29 @@ def resolve_did_route(dialed_number: str) -> Tuple[str, Optional[str]]:
                 _DID_TENANT_CACHE[cleaned] = tid
                 return res
 
-            tid = resolve_tenant_from_did(cleaned)
+        # Unknown DID: serve it from the configured default tenant (if any). Not cached, so a DID
+        # assigned later is picked up without a restart.
+        return _default_route()
+    except Exception as e:
+        logger.error(f"[Resolve DID Route Error] {e}")
+        return _default_route()
+
+
+def _default_route() -> Tuple[str, Optional[str]]:
+    """(DEFAULT_TENANT_ID, its default agent) for traffic that can't be attributed; ("", None) when unset."""
+    tid = settings.DEFAULT_TENANT_ID
+    if not tid:
+        return ("", None)
+    try:
+        with sync_engine.connect() as conn:
             def_ag = conn.execute(
                 text("SELECT agent_id FROM agents WHERE (tenant_id = :tid OR tenant_id = :canon) AND is_default = true AND is_active = true LIMIT 1"),
-                {"tid": tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in tid else tid}
+                {"tid": tid, "canon": tenant_canonical_alias(tid)}
             ).fetchone()
-            aid = def_ag[0] if def_ag else None
-            res = (tid, aid)
-            _DID_ROUTE_CACHE[cleaned] = res
-            return res
+        return (tid, def_ag[0] if def_ag else None)
     except Exception as e:
-        print(f"[Resolve DID Route Error] {e}")
-        return ("idigitalstudies", None)
+        logger.error(f"[Default Route Error] {e}")
+        return (tid, None)
 
 
 def resolve_tenant_from_did(dialed_number: str) -> str:
@@ -377,7 +380,7 @@ def get_tenant_exotel_credentials(tenant_id: str) -> Dict[str, str]:
             creds = {
                 "account_sid": row[1],
                 "api_key": row[2],
-                "api_token": row[3],
+                "api_token": decrypt_secret(row[3]),
                 "caller_id": row[4] or settings.EXOTEL_CALLER_ID,
                 "subdomain": settings.EXOTEL_SUBDOMAIN
             }
@@ -416,7 +419,7 @@ def check_tenant_wallet_balance(tenant_id: str, min_required: float = 15.0) -> T
                 {"tid": tid}
             ).fetchone()
             if not row:
-                return True, 500.0, "Tenant record not found, demo credit assumed."
+                return False, 0.0, f"Tenant '{tid}' is not registered."
             balance = float(row[0] or 0.0)
             status = str(row[1] or "active").lower()
             if status != "active":
@@ -425,6 +428,44 @@ def check_tenant_wallet_balance(tenant_id: str, min_required: float = 15.0) -> T
                 return False, balance, f"Insufficient wallet balance (₹{balance:.2f}). Minimum ₹{min_required:.2f} required."
             return True, balance, "OK"
     except Exception as e:
+        # Fail closed: never place or accept billable calls when the balance can't be verified
         print(f"[Check Wallet Error] {e}")
-        return True, 500.0, "Bypass on error"
+        return False, 0.0, "Wallet balance could not be verified"
+
+
+def get_tenant_did(tenant_id: str, vendor: Optional[str] = None) -> Optional[str]:
+    """
+    Returns the primary active DID phone number assigned to this tenant from tenant_phone_numbers.
+    Optionally filters by telephony vendor ('rpdigital', 'exotel').
+    """
+    tid = normalize_tenant_id(tenant_id)
+    try:
+        with sync_engine.connect() as conn:
+            if vendor:
+                row = conn.execute(
+                    text("""
+                        SELECT number FROM tenant_phone_numbers 
+                        WHERE tenant_id = :tid AND vendor = :vendor AND is_active = true 
+                        ORDER BY assigned_agent_id IS NOT NULL DESC 
+                        LIMIT 1
+                    """),
+                    {"tid": tid, "vendor": vendor}
+                ).fetchone()
+                if row and row[0]:
+                    return row[0]
+
+            row2 = conn.execute(
+                text("""
+                    SELECT number FROM tenant_phone_numbers 
+                    WHERE tenant_id = :tid AND is_active = true 
+                    ORDER BY assigned_agent_id IS NOT NULL DESC 
+                    LIMIT 1
+                """),
+                {"tid": tid}
+            ).fetchone()
+            if row2 and row2[0]:
+                return row2[0]
+    except Exception as e:
+        print(f"[get_tenant_did Error] {e}")
+    return None
 

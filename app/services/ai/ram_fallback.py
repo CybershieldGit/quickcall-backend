@@ -154,10 +154,42 @@ def get_ram_fallback_response(session: Dict, user_query: str) -> str:
     tenant_id = session.get("tenant_id", "idigitalstudies")
 
     # Select tenant knowledge dictionary
-    if tenant_id == "phonotel":
+    canon_tid = str(tenant_id).lower().strip()
+    if canon_tid in ("phonotel", "phono_tel", "phono-tel"):
         tenant_kb = PHONOTEL_RAM_KNOWLEDGE
-    else:
+    elif canon_tid in ("idigitalstudies", "cl_idigitalstudie_82d5", "ids"):
         tenant_kb = IDS_RAM_KNOWLEDGE
+    else:
+        # Dynamic generic tenant fallback: strictly isolates context and NEVER leaks another company
+        cfg = session.get("config", {})
+        b_name = cfg.get("business_name") or "our business"
+        adv_name = cfg.get("advisor_name") or cfg.get("agent_name") or "customer care"
+        tenant_kb = {
+            "identity": {
+                "hi": f"Main {adv_name} hoon, {b_name} se customer advisor! Main aapki kya sahayata kar sakti hoon?",
+                "en": f"I am {adv_name}, customer advisor for {b_name}! How can I help you today?"
+            },
+            "escalation": {
+                "hi": f"Ji bilkul, main aapko turant {b_name} ke senior executive se connect kar rahi hoon. Kripya line par bane rahiye.",
+                "en": f"Certainly, let me connect you directly with a senior executive from {b_name}. Please hold the line."
+            },
+            "greeting": {
+                "hi": f"Namaste! {b_name} mein aapka swagat hai. Aaj main aapki kya madad kar sakti hoon?",
+                "en": f"Hello! Welcome to {b_name}. How can I assist you today?"
+            },
+            "farewell": {
+                "hi": f"{b_name} se connect karne ke liye shukriya! Aapka din shubh ho, namaste.",
+                "en": f"Thank you for contacting {b_name}! Have a wonderful day, goodbye."
+            },
+            "off_topic": {
+                "hi": f"Main yahan {b_name} ke services aur offerings ke baare mein guide karne ke liye hoon. Batayein kya janna chahte hain?",
+                "en": f"I am here specifically to assist you with services and offerings for {b_name}. How can I help you today?"
+            },
+            "default": {
+                "hi": f"{b_name} se connect karne ke liye dhanyawad. Is baare mein main hamari team se bol kar aapko poori jankari dilwa sakti hoon.",
+                "en": f"Thank you for contacting {b_name}. I can have our team follow up with complete information on this."
+            }
+        }
 
     # 1. Identity & "Are you AI / Real person" query
     if intent_detector.is_identity_or_bot_query(clean_q):

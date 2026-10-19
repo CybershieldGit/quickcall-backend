@@ -21,6 +21,8 @@ from app.core.audio_utils import pcm_rms, OfficeAcousticsFilter
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.config import settings
+from fastapi import Depends
+from app.core.auth import verify_internal_bridge_token, get_current_admin
 from app.core.tenant_service import resolve_tenant_from_did, resolve_did_route, load_tenant_config
 from app.core.voice_agent import (
     VoiceAgent, SESSIONS, _log_call_end, generate_executive_summary
@@ -62,9 +64,9 @@ def _get_http_client() -> httpx.AsyncClient:
     return _HTTP_CLIENT
 
 
-async def transcribe_audio_pcm(pcm_data: bytes, sample_rate: int = 8000, language_hint: Optional[str] = None) -> Tuple[str, str]:
-    """Fast multilingual transcription (Sarvam saaras:v3 primary, Deepgram Nova-2 fallback)."""
-    return await transcribe_pcm(pcm_data, sample_rate=sample_rate, language_hint=language_hint)
+async def transcribe_audio_pcm(pcm_data: bytes, sample_rate: int = 8000, language_hint: Optional[str] = None, is_dictating: bool = False) -> Tuple[str, str]:
+    """Fast multilingual transcription (Deepgram Nova-2 prioritized for alphanumeric dictation, Sarvam saaras:v3 for conversational speech)."""
+    return await transcribe_pcm(pcm_data, sample_rate=sample_rate, language_hint=language_hint, is_dictating=is_dictating)
 
 
 async def warmup_sip_stt():
@@ -102,10 +104,15 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
     Receives caller audio, runs VAD & Deepgram STT, generates response with VoiceAgent,
     and streams synthesized speech back to the caller in real-time.
     """
+    query_params = parse_qs(str(websocket.url.query))
+    # Loopback bridge only: the in-process SIP client presents an HMAC-derived token
+    if not verify_internal_bridge_token(query_params.get("bridge_token", [""])[0]):
+        await websocket.close(code=1008, reason="Invalid bridge token")
+        return
     await websocket.accept()
     print("[SIPStream] Client WebSocket connected.")
+    sip_call_start = time.perf_counter()
 
-    query_params = parse_qs(str(websocket.url.query))
     url_call_id = query_params.get("call_id", [""])[0]
     url_caller = query_params.get("caller", [""])[0] or "unknown"
     url_called = query_params.get("called", [""])[0] or ""
@@ -116,7 +123,7 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
     caller_phone: str = url_caller
     called_phone: str = url_called
     tid, aid = resolve_did_route(called_phone) if called_phone else resolve_did_route(caller_phone)
-    tenant_id: str = url_tenant or tid or "idigitalstudies"
+    tenant_id: str = url_tenant or tid
     agent_id: Optional[str] = aid
     agent: Optional[VoiceAgent] = None
 
@@ -459,6 +466,10 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
     try:
         while True:
             message = await websocket.receive_text()
+            if time.perf_counter() - sip_call_start > settings.MAX_CALL_DURATION_SECONDS:
+                print(f"[SIPStream] ⏱️ Call {call_id} hit MAX_CALL_DURATION_SECONDS; hanging up.")
+                await websocket.close(code=1000, reason="Maximum call duration reached")
+                break
             try:
                 data = json.loads(message)
             except (json.JSONDecodeError, TypeError) as jde:
@@ -471,9 +482,23 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
                 caller_phone = data.get("caller") or caller_phone
                 called_phone = data.get("called") or called_phone
                 call_id = data.get("call_id") or call_id
-                tid, aid = resolve_did_route(called_phone) if called_phone else resolve_did_route(caller_phone)
-                tenant_id = data.get("tenant_id") or tenant_id or tid or "idigitalstudies"
-                agent_id = data.get("agent_id") or aid
+                
+                tid, aid = resolve_did_route(called_phone) if called_phone else ("", None)
+                if not tid and caller_phone:
+                    tid, aid = resolve_did_route(caller_phone)
+                
+                if not tid and call_id:
+                    try:
+                        with sync_engine.connect() as conn:
+                            db_row = conn.execute(text("SELECT tenant_id, agent_id FROM calls WHERE call_id = :cid"), {"cid": call_id}).fetchone()
+                            if db_row and db_row[0]:
+                                tid = db_row[0]
+                                aid = aid or db_row[1]
+                    except Exception:
+                        pass
+
+                tenant_id = data.get("tenant_id") or tenant_id or tid or "cl_idigitalstudie_82d5"
+                agent_id = data.get("agent_id") or agent_id or aid
                 call_connect_time = asyncio.get_event_loop().time()
 
                 print(f"[SIPStream] Call Started: call_id={call_id}, caller={caller_phone}, called={called_phone}, tenant={tenant_id}, agent={agent_id}")
@@ -613,7 +638,12 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
                         audio_dur = round(len(captured_audio) / 16000.0, 2)
                         audio_buffer.clear()
                         lang_hint = agent.session.get("language", "en-IN") if agent and hasattr(agent, "session") and agent.session else "en-IN"
-                        user_text, detected_lang = await transcribe_audio_pcm(captured_audio, sample_rate=8000, language_hint=lang_hint)
+                        user_text, detected_lang = await transcribe_audio_pcm(
+                            captured_audio, 
+                            sample_rate=8000, 
+                            language_hint=lang_hint,
+                            is_dictating=is_dictating
+                        )
                         if call_id in SESSIONS:
                             SESSIONS[call_id]["stt_audio_seconds"] = SESSIONS[call_id].get("stt_audio_seconds", 0.0) + audio_dur
                             if user_text:
@@ -692,7 +722,7 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
 
 
 @router.post("/sip/reconnect", tags=["Asterisk WebRTC SIP Stream"])
-async def reconnect_sip():
+async def reconnect_sip(admin_user: dict = Depends(get_current_admin)):
     """Forces Asterisk WebRTC SIP client to disconnect and reconnect with a fresh REGISTER."""
     try:
         from app.core.sip_client import get_asterisk_sip_client
@@ -704,13 +734,13 @@ async def reconnect_sip():
             asyncio.create_task(sc.start())
             return {"status": "started", "message": f"Started SIP client loop for {sc.username}."}
     except Exception as e:
-        import traceback
-        return {"status": "error", "error": str(e), "trace": traceback.format_exc()}
+        print(f"[SIPStream] Reconnect error: {e}")
+        return {"status": "error", "error": "Failed to reconnect SIP client."}
 
 
 
 @router.get("/sip/status", tags=["Asterisk WebRTC SIP Stream"])
-async def sip_status():
+async def sip_status(admin_user: dict = Depends(get_current_admin)):
     """Returns current Asterisk SIP client status."""
     from app.core.sip_client import get_asterisk_sip_client
     sc = get_asterisk_sip_client()

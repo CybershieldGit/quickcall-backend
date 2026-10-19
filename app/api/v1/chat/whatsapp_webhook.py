@@ -8,13 +8,17 @@ Handles:
 """
 import time
 import json
+import hmac
+import base64
+import hashlib
 import logging
 from typing import Optional, Dict, Any
 
-from fastapi import APIRouter, Request, Response, HTTPException, Query, BackgroundTasks
+from fastapi import APIRouter, Request, Response, HTTPException, Query, BackgroundTasks, Depends
 from app.config import settings
+from app.core.auth import get_current_admin
 from app.core.tenant_service import normalize_tenant_id, load_tenant_config
-from app.services.messaging.brochure_service import send_whatsapp_message
+from app.services.messaging.brochure_service import send_whatsapp_message, get_tenant_brochure_url
 from app.api.v1.chat.chat_router import _get_or_create_chat_session, _get_business_info
 from app.core.llm_service import call_llm
 from app.core.intent_detector import (
@@ -39,16 +43,41 @@ async def verify_meta_webhook(
     URL: https://<your-domain>/api/v1/whatsapp/webhook
     Verify Token: matches WHATSAPP_VERIFY_TOKEN in .env
     """
-    expected_token = getattr(settings, "WHATSAPP_VERIFY_TOKEN", "qwickcall_webhook_token")
-    if hub_mode == "subscribe" and hub_verify_token == expected_token:
-        logger.info(f"✅ [Meta WhatsApp Webhook] Verification successful (challenge: {hub_challenge})")
+    expected_token = settings.WHATSAPP_VERIFY_TOKEN
+    if (
+        expected_token
+        and hub_mode == "subscribe"
+        and hmac.compare_digest(hub_verify_token or "", expected_token)
+    ):
+        logger.info("✅ [Meta WhatsApp Webhook] Verification successful")
         return Response(content=str(hub_challenge), media_type="text/plain")
 
-    logger.warning(
-        f"❌ [Meta WhatsApp Webhook] Verification failed. "
-        f"Received token: '{hub_verify_token}', Expected: '{expected_token}', Mode: '{hub_mode}'"
-    )
+    logger.warning(f"❌ [Meta WhatsApp Webhook] Verification failed (mode: '{hub_mode}', token configured: {bool(expected_token)})")
     raise HTTPException(status_code=403, detail="Webhook verification token mismatch")
+
+
+def _verify_meta_signature(raw_body: bytes, signature_header: Optional[str]) -> bool:
+    """Validates Meta's X-Hub-Signature-256 (HMAC-SHA256 of the raw body with the app secret)."""
+    secret = settings.WHATSAPP_APP_SECRET
+    if not secret or not signature_header or not signature_header.startswith("sha256="):
+        return False
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(signature_header[len("sha256="):], expected)
+
+
+def _verify_twilio_signature(url: str, params: Dict[str, Any], signature_header: Optional[str]) -> bool:
+    """Validates X-Twilio-Signature (base64 HMAC-SHA1 of URL + sorted POST params with the auth token)."""
+    token = settings.TWILIO_AUTH_TOKEN
+    if not token or not signature_header:
+        return False
+    payload = url + "".join(f"{k}{params[k]}" for k in sorted(params))
+    expected = base64.b64encode(hmac.new(token.encode(), payload.encode(), hashlib.sha1).digest()).decode()
+    return hmac.compare_digest(signature_header, expected)
+
+
+def _signature_required() -> bool:
+    # The mock provider is for local development only; real providers must sign their webhooks
+    return (settings.WHATSAPP_PROVIDER or "mock").lower() != "mock" or settings.IS_PRODUCTION
 
 
 async def _process_and_reply_whatsapp(
@@ -65,7 +94,7 @@ async def _process_and_reply_whatsapp(
             return
 
         session_id = f"wa_{from_number.replace('+', '').replace(' ', '')}"
-        sess = _get_or_create_chat_session(session_id, tenant_id, "hi-IN")
+        sess = _get_or_create_chat_session(session_id, tenant_id, "hi-IN", trusted=True)
         config = sess.get("config") or load_tenant_config(tenant_id) or {}
         b_name, advisor = _get_business_info(tenant_id, config)
         curr_lang = sess.get("language", "hi-IN")
@@ -105,11 +134,11 @@ async def _process_and_reply_whatsapp(
         # 3. Brochure Request
         elif detect_brochure_intent(clean_msg):
             rules = config.get("business_rules", {})
-            b_url = rules.get("brochure_url") or getattr(settings, "DEFAULT_BROCHURE_URL", "https://idigitalstudies.com/assets/brochure.pdf")
-            b_title = rules.get("brochure_title") or "Course Brochure"
+            b_url = get_tenant_brochure_url(tenant_id)
+            b_title = rules.get("brochure_title") or f"{b_name} Official Brochure"
             reply = (
-                f"Here is the official {b_name} curriculum brochure: {b_url}\n\n"
-                f"Feel free to ask me any questions about batch timings, fee installments, or 100% placement support!"
+                f"Here is the official {b_name} brochure: {b_url}\n\n"
+                f"Please let me know if you have any questions or require further details!"
             )
             # Send message with media attachment
             await send_whatsapp_message(
@@ -163,8 +192,12 @@ async def handle_whatsapp_webhook(
 
     # 1. Meta WhatsApp Cloud API (JSON Payload)
     if "application/json" in content_type:
+        raw_body = await request.body()
+        if _signature_required() and not _verify_meta_signature(raw_body, request.headers.get("x-hub-signature-256")):
+            logger.warning("❌ [Meta WhatsApp Webhook] Rejected request with missing/invalid signature")
+            return Response(content="Invalid signature", status_code=403)
         try:
-            body = await request.json()
+            body = json.loads(raw_body)
         except Exception:
             return Response(content="Invalid JSON", status_code=400)
 
@@ -204,6 +237,10 @@ async def handle_whatsapp_webhook(
     # 2. Twilio WhatsApp (Form-URLencoded Payload)
     elif "application/x-www-form-urlencoded" in content_type:
         form = await request.form()
+        public_url = f"{settings.BASE_URL.rstrip('/')}{request.url.path}"
+        if _signature_required() and not _verify_twilio_signature(public_url, dict(form), request.headers.get("x-twilio-signature")):
+            logger.warning("❌ [Twilio WhatsApp Webhook] Rejected request with missing/invalid signature")
+            return Response(content="Invalid signature", status_code=403)
         from_raw = form.get("From", "")  # e.g., "whatsapp:+919876543210"
         body_text = form.get("Body", "")
 
@@ -222,7 +259,7 @@ async def handle_whatsapp_webhook(
 
 
 @router.get("/status")
-async def get_whatsapp_status():
+async def get_whatsapp_status(admin_user: Dict[str, Any] = Depends(get_current_admin)):
     """
     Returns the active WhatsApp provider configuration status.
     """
@@ -235,5 +272,6 @@ async def get_whatsapp_status():
         "twilio_configured": bool(settings.TWILIO_ACCOUNT_SID and settings.TWILIO_AUTH_TOKEN),
         "twilio_from": settings.TWILIO_WHATSAPP_FROM if settings.TWILIO_ACCOUNT_SID else None,
         "webhook_url": f"{settings.BASE_URL}/api/v1/whatsapp/webhook",
-        "verify_token": settings.WHATSAPP_VERIFY_TOKEN
+        "verify_token_configured": bool(settings.WHATSAPP_VERIFY_TOKEN),
+        "signature_verification": bool(settings.WHATSAPP_APP_SECRET or settings.TWILIO_AUTH_TOKEN)
     }

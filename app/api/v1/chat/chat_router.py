@@ -1,3 +1,4 @@
+from app.core.auth import get_optional_tenant_auth, verify_tenant_access
 """
 Chat Agent API Router — Enterprise Multi-Tenant Conversational Text & Web Chat
 Supports:
@@ -14,11 +15,18 @@ import json
 import logging
 from typing import Optional, List, Dict, Any, AsyncGenerator
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.config import settings
+from app.core.auth import tenant_canonical_alias
+from app.core.rate_limit import rate_limit_request, enforce_rate_limit
+import re
+
+# Public chat session IDs are bearer secrets: only server-issued random IDs are accepted from clients
+_PUBLIC_CHAT_SESSION_RE = re.compile(r"^chat_[0-9a-f]{12,32}$")
+_MAX_CHAT_MESSAGE = 2000
 from app.core.tenant_service import (
     load_tenant_config, normalize_tenant_id, get_current_escalation_number
 )
@@ -27,7 +35,7 @@ from app.core.intent_detector import (
     is_identity_or_bot_query, detect_brochure_intent
 )
 from app.core.messaging_service import (
-    extract_phone_number, extract_email_address, send_brochure
+    extract_phone_number, extract_email_address, send_brochure, get_tenant_brochure_url
 )
 from app.core.llm_service import call_llm, call_llm_stream
 from app.core import rag_engine
@@ -129,14 +137,21 @@ def _get_or_create_chat_session(
     session_id: Optional[str],
     tenant_id: str,
     lang: Optional[str] = None,
-    agent_id: Optional[str] = None
+    agent_id: Optional[str] = None,
+    trusted: bool = False
 ) -> Dict[str, Any]:
-    """Retrieves existing session or provisions a new one."""
-    sid = session_id or f"chat_{uuid.uuid4().hex[:12]}"
+    """
+    Retrieves existing session or provisions a new one.
+    Untrusted (client-supplied) IDs must look like server-issued chat_ IDs, so web visitors
+    can't attach to WhatsApp (wa_<phone>) or voice-call sessions.
+    """
+    if session_id and not trusted and not _PUBLIC_CHAT_SESSION_RE.match(session_id):
+        session_id = None
+    sid = session_id or f"chat_{uuid.uuid4().hex}"
     sess = get_session(sid)
 
-    # If agent_id changed or specified differently, discard old cached session to switch persona
-    if sess and agent_id and sess.get("agent_id") != agent_id:
+    # If tenant_id or agent_id changed, discard old cached session to prevent cross-tenant conversation bleed
+    if sess and (sess.get("tenant_id") != tenant_id or (agent_id and sess.get("agent_id") != agent_id)):
         sess = None
 
     if not sess:
@@ -150,7 +165,7 @@ def _get_or_create_chat_session(
                             WHERE (tenant_id = :tid OR tenant_id = :canon) AND assigned_agent_id IS NOT NULL 
                             ORDER BY id ASC LIMIT 1
                         """),
-                        {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+                        {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
                     ).fetchone()
                     if row and row[0]:
                         agent_id = row[0]
@@ -188,16 +203,17 @@ def _get_or_create_chat_session(
 # Endpoints
 # -----------------------------------------------------------------------------
 @router.post("/start")
-async def start_chat(req: ChatStartRequest):
+async def start_chat(req: ChatStartRequest, request: Request):
     """
     Initializes a new chat session for a tenant and returns the initial welcome greeting.
     """
+    rate_limit_request(request, "chat_start", limit=20, window_seconds=600)
     try:
         tenant_id = normalize_tenant_id(req.tenant_id)
         config = load_tenant_config(tenant_id, agent_id=req.agent_id) or {}
         b_name, advisor = _get_business_info(tenant_id, config)
         lang = req.language or "hi-IN"
-        session_id = f"chat_{uuid.uuid4().hex[:12]}"
+        session_id = f"chat_{uuid.uuid4().hex}"
 
         greeting = _get_greeting(tenant_id, config, lang)
         sess_data = {
@@ -230,22 +246,24 @@ async def start_chat(req: ChatStartRequest):
         }
     except Exception as e:
         logger.error(f"[Chat API] Start chat error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start chat session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to start chat session.")
 
 
 @router.post("")
 @router.post("/message")
-async def send_chat_message(req: ChatMessageRequest):
+async def send_chat_message(req: ChatMessageRequest, request: Request = None):
     """
     Processes a multi-turn chat message.
     Accepts: message, query, text, or user_speech.
     Returns: AI response, updated history, escalation flag, and metadata.
     """
     t0 = time.time()
+    if request is not None:
+        rate_limit_request(request, "chat_message", limit=40, window_seconds=300)
     try:
         tenant_id = normalize_tenant_id(req.tenant_id)
         raw_msg = req.message or req.query or req.text or req.user_speech or ""
-        clean_msg = raw_msg.strip()
+        clean_msg = raw_msg.strip()[:_MAX_CHAT_MESSAGE]
 
         if not clean_msg:
             raise HTTPException(status_code=400, detail="Message text is required.")
@@ -298,7 +316,7 @@ async def send_chat_message(req: ChatMessageRequest):
             ph = extract_phone_number(clean_msg)
             em = extract_email_address(clean_msg)
             rules = config.get("business_rules", {})
-            b_url = rules.get("brochure_url") or getattr(settings, "DEFAULT_BROCHURE_URL", "https://idigitalstudies.com/assets/brochure.pdf")
+            b_url = get_tenant_brochure_url(tenant_id)
 
             if ph:
                 import asyncio
@@ -391,18 +409,19 @@ async def send_chat_message(req: ChatMessageRequest):
         raise
     except Exception as e:
         logger.error(f"[Chat API] Message processing error: {e}")
-        raise HTTPException(status_code=500, detail=f"Error generating chat response: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error generating chat response.")
 
 
 @router.post("/stream")
-async def stream_chat_message(req: ChatMessageRequest):
+async def stream_chat_message(req: ChatMessageRequest, request: Request):
     """
     Streaming chat endpoint using Server-Sent Events (SSE).
     Yields sentence chunks in real-time as they are synthesized by the LLM.
     """
+    rate_limit_request(request, "chat_message", limit=40, window_seconds=300)
     tenant_id = normalize_tenant_id(req.tenant_id)
     raw_msg = req.message or req.query or req.text or req.user_speech or ""
-    clean_msg = raw_msg.strip()
+    clean_msg = raw_msg.strip()[:_MAX_CHAT_MESSAGE]
 
     if not clean_msg:
         raise HTTPException(status_code=400, detail="Message text is required.")
@@ -448,7 +467,7 @@ async def stream_chat_message(req: ChatMessageRequest):
             ph = extract_phone_number(clean_msg)
             em = extract_email_address(clean_msg)
             rules = config.get("business_rules", {})
-            b_url = rules.get("brochure_url") or getattr(settings, "DEFAULT_BROCHURE_URL", "https://idigitalstudies.com/assets/brochure.pdf")
+            b_url = get_tenant_brochure_url(tenant_id)
 
             if ph:
                 import asyncio
@@ -530,12 +549,23 @@ async def stream_chat_message(req: ChatMessageRequest):
 
 
 @router.get("/history/{session_id}")
-async def get_chat_history(session_id: str):
+async def get_chat_history(
+    session_id: str,
+    auth: Optional[Dict[str, Any]] = Depends(get_optional_tenant_auth)
+):
     """
     Returns the transcript history for a given chat session.
+    Anonymous visitors may read only their own server-issued web chat session;
+    any other session (e.g. WhatsApp) requires a tenant credential for its workspace.
     """
     sess = get_session(session_id)
-    if not sess:
+    is_public_id = bool(_PUBLIC_CHAT_SESSION_RE.match(session_id or ""))
+    sess_tid = (sess or {}).get("tenant_id")
+    allowed = bool(sess) and (
+        (auth and sess_tid and verify_tenant_access(sess_tid, auth))
+        or (not auth and is_public_id)
+    )
+    if not allowed:
         raise HTTPException(status_code=404, detail="Chat session not found or expired.")
     return {
         "status": "success",
@@ -552,11 +582,13 @@ async def get_chat_history(session_id: str):
 @router.delete("/history/{session_id}")
 async def clear_chat_history(session_id: Optional[str] = None, req: Optional[ChatClearRequest] = None):
     """
-    Resets conversation history for a chat session.
+    Resets conversation history for a web chat session.
     """
     sid = session_id or (req.session_id if req else None)
     if not sid:
         raise HTTPException(status_code=400, detail="session_id is required.")
+    if not _PUBLIC_CHAT_SESSION_RE.match(sid):
+        raise HTTPException(status_code=400, detail="Invalid session_id.")
 
     sess = get_session(sid)
     if sess:
@@ -601,11 +633,13 @@ async def get_widget_config(tenant_id: str):
 
 
 @router.post("/send-brochure")
-async def send_brochure_api(req: BrochureDispatchRequest):
+async def send_brochure_api(req: BrochureDispatchRequest, request: Request):
     """
     Direct endpoint to dispatch brochure via WhatsApp or Email.
     Powers website chat buttons, interactive forms, and CRM automations.
+    Rate-limited per visitor and per destination so it can't be used as a spam relay.
     """
+    rate_limit_request(request, "send_brochure", limit=5, window_seconds=3600)
     tenant_id = normalize_tenant_id(req.tenant_id)
     ch = req.channel.lower().strip()
 
@@ -623,6 +657,10 @@ async def send_brochure_api(req: BrochureDispatchRequest):
         clean_ch = "email"
     else:
         raise HTTPException(status_code=400, detail="Channel must be either 'whatsapp' or 'email'.")
+
+    enforce_rate_limit(f"send_brochure_dest:{dest.lower()}", limit=3, window_seconds=86400)
+    if req.session_id and not _PUBLIC_CHAT_SESSION_RE.match(req.session_id):
+        req.session_id = None
 
     result = await send_brochure(
         tenant_id=tenant_id,
@@ -657,8 +695,8 @@ async def get_brochure_info(tenant_id: str = "idigitalstudies"):
     cfg = load_tenant_config(tid) or {}
     rules = cfg.get("business_rules", {})
     b_name = cfg.get("business_name") or ("iDigitalStudies" if "digital" in tid else "Customer Support")
-    brochure_url = rules.get("brochure_url") or getattr(settings, "DEFAULT_BROCHURE_URL", "https://idigitalstudies.com/assets/brochure.pdf")
-    brochure_title = rules.get("brochure_title") or f"{b_name} Official Curriculum & Admissions Brochure"
+    brochure_url = get_tenant_brochure_url(tid)
+    brochure_title = rules.get("brochure_title") or f"{b_name} Official Information & Brochure"
 
     return {
         "status": "success",

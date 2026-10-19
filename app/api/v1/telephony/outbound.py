@@ -1,12 +1,17 @@
 import os
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, Query
+from urllib.parse import quote
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db.session import get_db
+from app.core.auth import get_current_tenant_auth, verify_tenant_access, resolve_tenant_scope, tenant_alias_ids
+from app.core.rate_limit import enforce_rate_limit
+from app.services.tenant.tenant_service import get_tenant_did
+from sqlalchemy import bindparam
 
 router = APIRouter(prefix="/api/call", tags=["Outbound Calls"])
 
@@ -30,7 +35,7 @@ def _get_current_base_url() -> str:
 class OutboundCallRequest(BaseModel):
     phone_number: Optional[str] = None
     to_number: Optional[str] = None
-    tenant_id: Optional[str] = "idigitalstudies"
+    tenant_id: Optional[str] = None
     stream_mode: Optional[bool] = True
 
 def _clean_phone_number(raw: str) -> str:
@@ -42,26 +47,29 @@ def _clean_phone_number(raw: str) -> str:
             cleaned = "+" + cleaned
     return cleaned
 
-def trigger_exotel_outbound_call(target_number: str, tenant_id: str = "idigitalstudies") -> Dict[str, Any]:
+def trigger_exotel_outbound_call(target_number: str, tenant_id: str = "idigitalstudies", caller_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Triggers an outbound call to the target phone number using Exotel REST API.
     Connects the caller to the Voicebot flow for full-duplex conversational AI.
     """
     if not settings.EXOTEL_ACCOUNT_SID or not settings.EXOTEL_API_KEY or not settings.EXOTEL_API_TOKEN:
         raise ValueError("EXOTEL_ACCOUNT_SID, EXOTEL_API_KEY, and EXOTEL_API_TOKEN must be configured in .env")
-    if not settings.EXOTEL_CALLER_ID:
-        raise ValueError("EXOTEL_CALLER_ID must be configured in .env")
+
+    effective_caller_id = caller_id or get_tenant_did(tenant_id, vendor="exotel") or settings.EXOTEL_CALLER_ID
+    if not effective_caller_id:
+        raise ValueError("No Exotel Caller ID configured in .env or assigned to tenant")
 
     base_url = _get_current_base_url()
     cleaned = _clean_phone_number(target_number)
 
-    url = f"https://{settings.EXOTEL_API_KEY}:{settings.EXOTEL_API_TOKEN}@{settings.EXOTEL_SUBDOMAIN}/v1/Accounts/{settings.EXOTEL_ACCOUNT_SID}/Calls/connect.json"
-    
+    url = f"https://{settings.EXOTEL_SUBDOMAIN}/v1/Accounts/{settings.EXOTEL_ACCOUNT_SID}/Calls/connect.json"
+    token_qs = f"&token={quote(settings.EXOTEL_WEBHOOK_TOKEN)}" if settings.EXOTEL_WEBHOOK_TOKEN else ""
+
     payload = {
         "From": cleaned,
-        "CallerId": settings.EXOTEL_CALLER_ID,
-        "Url": f"{base_url}/exotel/passthru?tenant_id={tenant_id}",
-        "StatusCallback": f"{base_url}/exotel/status",
+        "CallerId": effective_caller_id,
+        "Url": f"{base_url}/exotel/passthru?tenant_id={quote(tenant_id)}{token_qs}",
+        "StatusCallback": f"{base_url}/exotel/status" + (f"?token={quote(settings.EXOTEL_WEBHOOK_TOKEN)}" if settings.EXOTEL_WEBHOOK_TOKEN else ""),
         "CustomField": f"outbound_voicebot_{tenant_id}"
     }
 
@@ -70,7 +78,7 @@ def trigger_exotel_outbound_call(target_number: str, tenant_id: str = "idigitals
 
     try:
         with httpx.Client(timeout=10.0) as client:
-            res = client.post(url, data=payload)
+            res = client.post(url, data=payload, auth=(settings.EXOTEL_API_KEY, settings.EXOTEL_API_TOKEN))
             if res.status_code in (200, 201):
                 data = res.json()
                 call_data = data.get("Call", {})
@@ -78,7 +86,7 @@ def trigger_exotel_outbound_call(target_number: str, tenant_id: str = "idigitals
                     "call_sid": call_data.get("Sid", "exo_call"),
                     "status": call_data.get("Status", "queued"),
                     "to": cleaned,
-                    "from": settings.EXOTEL_CALLER_ID,
+                    "from": effective_caller_id,
                     "tenant_id": tenant_id,
                     "vendor": "exotel"
                 }
@@ -97,10 +105,11 @@ def trigger_exotel_outbound_call(target_number: str, tenant_id: str = "idigitals
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Exotel Telecom Gateway timed out while placing outbound call.")
     except httpx.RequestError as re:
-        raise HTTPException(status_code=502, detail=f"Network error connecting to Exotel Gateway: {str(re)}")
+        raise HTTPException(status_code=502, detail="Network error connecting to Exotel Gateway.")
 
-from app.core.auth import get_current_tenant_auth
 import re
+
+_DIALABLE_RE = re.compile(r"^\+?[0-9]{10,15}$")
 
 @router.post("/outbound")
 @router.post("/make-call")
@@ -112,12 +121,13 @@ async def make_outbound_call(
     if not target:
         raise HTTPException(status_code=400, detail="Phone number (phone_number or to_number) is required.")
 
-    # Validate phone number length and format against toll-fraud injection
-    digits = re.sub(r"\D", "", target)
-    if (len(digits) < 4 or len(digits) > 15) and not target.startswith("*"):
-        raise HTTPException(status_code=400, detail="Invalid phone number format. Must contain 4 to 15 digits.")
+    # Only plain 10-15 digit numbers are dialable (no star codes, SIP URIs, or short codes: toll-fraud guard)
+    target = re.sub(r"[\s\-\(\)]", "", target)
+    if not _DIALABLE_RE.match(target):
+        raise HTTPException(status_code=400, detail="Invalid phone number format. Must be a 10 to 15 digit number.")
 
-    tenant_id = req.tenant_id or auth.get("tenant_id") or "idigitalstudies"
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
+    enforce_rate_limit(f"outbound_call:{tenant_id}", limit=30, window_seconds=3600)
 
     # Pre-call financial check: Ensure tenant has minimum credit balance
     from app.services.tenant.tenant_service import check_tenant_wallet_balance
@@ -129,13 +139,14 @@ async def make_outbound_call(
         )
 
     from app.core.audio.sip_client import get_asterisk_sip_client
-    sip_client = get_asterisk_sip_client()
+    tenant_did = get_tenant_did(tenant_id, vendor="rpdigital") or settings.RPDIGITAL_DID_NUMBER or "+917935486072"
+    sip_client = get_asterisk_sip_client(tenant_did)
 
     # 1. Primary: If RP Digital Asterisk SIP client is registered, dispatch via Asterisk WebRTC
     if sip_client.is_registered and sip_client.is_running:
         try:
-            call_info = await sip_client.make_outbound_call(target, tenant_id=tenant_id)
-            from_num = call_info.get("from") or settings.RPDIGITAL_DID_NUMBER or "+917935486072"
+            call_info = await sip_client.make_outbound_call(target, tenant_id=tenant_id, caller_id=tenant_did)
+            from_num = call_info.get("from") or tenant_did
             return {
                 "status": "success",
                 "message": f"Calling {target} via RP Digital DID {from_num}...",
@@ -149,10 +160,12 @@ async def make_outbound_call(
     # 2. Fallback / BYOC: If Exotel credentials exist, dispatch via Exotel Voicebot API
     if settings.EXOTEL_ACCOUNT_SID and settings.EXOTEL_API_KEY and settings.EXOTEL_API_TOKEN:
         try:
-            call_info = trigger_exotel_outbound_call(target, tenant_id=tenant_id)
+            tenant_did = get_tenant_did(tenant_id, vendor="exotel") or settings.EXOTEL_CALLER_ID
+            call_info = trigger_exotel_outbound_call(target, tenant_id=tenant_id, caller_id=tenant_did)
+            from_num = call_info.get("from") or tenant_did
             return {
                 "status": "success",
-                "message": f"Calling {target} via Exotel Gateway ({settings.EXOTEL_CALLER_ID})...",
+                "message": f"Calling {target} via Exotel Gateway ({from_num})...",
                 "call_sid": call_info.get("call_sid"),
                 "vendor": "exotel",
                 "data": call_info
@@ -160,7 +173,8 @@ async def make_outbound_call(
         except HTTPException:
             raise
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to dispatch Exotel call: {str(e)}")
+            print(f"[Outbound] Exotel dispatch error: {e}")
+            raise HTTPException(status_code=500, detail="Failed to dispatch Exotel call.")
 
     raise HTTPException(
         status_code=400,
@@ -171,25 +185,24 @@ async def make_outbound_call(
 @router.get("/active-calls")
 async def get_active_calls(
     tenant_id: Optional[str] = Query(None, description="Optional tenant ID to filter call logs"),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth),
     db: AsyncSession = Depends(get_db)
 ):
-    """Returns the most recent calls from Postgres database asynchronously, strictly filtered by tenant when provided."""
+    """Returns the most recent calls, strictly scoped to a tenant the caller may access (admins may list all)."""
+    requested = tenant_id.strip() if tenant_id and tenant_id.strip() else None
+    is_admin = bool(auth.get("is_admin"))
+    target_tid = resolve_tenant_scope(auth, requested) if (requested or not is_admin) else None
     try:
-        if tenant_id and tenant_id.strip():
-            tid = tenant_id.strip()
+        if target_tid:
             result = await db.execute(text("""
                 SELECT call_id, caller_number, start_time, end_time, duration, outcome_tag, transferred,
                        summary, primary_concern, caller_sentiment, action_required, executive_notes
                 FROM calls 
-                WHERE tenant_id = :tid 
-                   OR tenant_id IN (
-                       SELECT t2.tenant_id FROM tenants t2 
-                       WHERE t2.business_name ILIKE (SELECT t1.business_name FROM tenants t1 WHERE t1.tenant_id = :tid LIMIT 1)
-                   )
+                WHERE tenant_id IN :tids
                 ORDER BY start_time DESC 
                 LIMIT 25
-            """), {"tid": tid})
-        else:
+            """).bindparams(bindparam("tids", expanding=True)), {"tids": tenant_alias_ids(target_tid)})
+        elif is_admin:
             result = await db.execute(text("""
                 SELECT call_id, caller_number, start_time, end_time, duration, outcome_tag, transferred,
                        summary, primary_concern, caller_sentiment, action_required, executive_notes
@@ -197,6 +210,8 @@ async def get_active_calls(
                 ORDER BY start_time DESC 
                 LIMIT 25
             """))
+        else:
+            return {"calls": []}
 
         rows = result.fetchall()
         calls = [
@@ -218,10 +233,15 @@ async def get_active_calls(
         ]
         return {"calls": calls}
     except Exception as e:
-        return {"calls": [], "error": str(e)}
+        print(f"[Outbound] Call log query error: {e}")
+        return {"calls": [], "error": "Failed to load call logs."}
 
 @router.get("/{call_id}/transcript")
-async def get_call_transcript(call_id: str, db: AsyncSession = Depends(get_db)):
+async def get_call_transcript(
+    call_id: str, 
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth),
+    db: AsyncSession = Depends(get_db)
+):
     """Fetches full recorded turn-by-turn conversation dialogue for a specific call."""
     try:
         call_res = await db.execute(text("""
@@ -232,6 +252,13 @@ async def get_call_transcript(call_id: str, db: AsyncSession = Depends(get_db)):
             WHERE call_id = :cid
         """), {"cid": call_id})
         call_row = call_res.fetchone()
+        if not call_row:
+            raise HTTPException(status_code=404, detail="Call record not found.")
+
+        call_tid = call_row[2]
+        if not verify_tenant_access(call_tid, auth):
+            # 404 rather than 403 so call IDs of other tenants can't be confirmed
+            raise HTTPException(status_code=404, detail="Call record not found.")
 
         metadata = None
         if call_row:
@@ -276,6 +303,9 @@ async def get_call_transcript(call_id: str, db: AsyncSession = Depends(get_db)):
             "total_turns": len(transcripts),
             "transcripts": transcripts
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load transcript: {str(e)}")
+        print(f"[Outbound] Transcript load error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to load transcript.")
 

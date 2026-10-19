@@ -10,13 +10,24 @@ Handles:
 """
 import uuid
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import text
 
 from app.config import settings
 from app.db.session import sync_engine
-from app.core.auth import verify_password, hash_password, create_access_token, get_current_reseller
+from app.core.auth import check_login_password, validate_new_password, hash_password, create_access_token, get_current_reseller
+from app.core.rate_limit import rate_limit_request, enforce_rate_limit
+
+
+def _own_reseller_id(auth: Dict[str, Any], requested: Optional[str]) -> str:
+    """Resellers may only act on their own account."""
+    own = auth.get("reseller_id")
+    if not own:
+        raise HTTPException(status_code=401, detail="Reseller partner authentication required.")
+    if requested and requested != own:
+        raise HTTPException(status_code=403, detail="Forbidden: You cannot act on another reseller account.")
+    return own
 
 router = APIRouter(prefix="/api/v1/reseller", tags=["Reseller Partner Portal"])
 
@@ -29,10 +40,10 @@ class ResellerLoginRequest(BaseModel):
     password: str
 
 class SubClientCreateRequest(BaseModel):
-    reseller_id: str = "partner_apex"
+    reseller_id: Optional[str] = None
     business_name: str
     email: str
-    password: Optional[str] = "tenant123"
+    password: str
     retail_rate_per_min: float = 5.00
     plan: str = "starter"  # starter | growth | enterprise
     initial_wallet_balance: float = 500.0
@@ -49,7 +60,7 @@ class SubClientTopupRequest(BaseModel):
     notes: Optional[str] = "Partner credit top-up"
 
 class ResellerBrandingRequest(BaseModel):
-    reseller_id: str
+    reseller_id: Optional[str] = None
     portal_title: str
     logo_url: Optional[str] = ""
     support_email: Optional[str] = ""
@@ -60,8 +71,10 @@ class ResellerBrandingRequest(BaseModel):
 # 1. Reseller Authentication
 # -----------------------------------------------------------------------------
 @router.post("/login")
-def reseller_login(req: ResellerLoginRequest):
+def reseller_login(req: ResellerLoginRequest, request: Request):
     """Authenticate reseller / agency partner."""
+    rate_limit_request(request, "reseller_login", limit=10, window_seconds=300)
+    enforce_rate_limit(f"reseller_login_account:{(req.email or '').strip().lower()}", limit=20, window_seconds=900)
     with sync_engine.connect() as conn:
         row = conn.execute(
             text("""
@@ -73,12 +86,9 @@ def reseller_login(req: ResellerLoginRequest):
             {"email": req.email}
         ).fetchone()
 
-        if not row:
-            raise HTTPException(status_code=401, detail="Reseller account not found.")
-
-        # In production use bcrypt; here check password or API key
-        if not (verify_password(req.password, row[4]) or (row[5] and req.password == row[5])):
-            raise HTTPException(status_code=401, detail="Invalid password.")
+        # Same response for unknown account and wrong password; API keys are not accepted as passwords
+        if not row or not check_login_password(req.password, row[4]):
+            raise HTTPException(status_code=401, detail="Invalid reseller login credentials.")
 
         if row[6] != "active":
             raise HTTPException(status_code=403, detail="Reseller account is suspended.")
@@ -108,7 +118,8 @@ reseller_guard = APIRouter(dependencies=[Depends(get_current_reseller)])
 # 2. Reseller Overview & Margin Economics
 # -----------------------------------------------------------------------------
 @reseller_guard.get("/overview")
-def get_reseller_overview(reseller_id: str):
+def get_reseller_overview(reseller_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_reseller)):
+    reseller_id = _own_reseller_id(auth, reseller_id)
     """
     Returns reseller's financial metrics:
     Wholesale rate, Wallet balance, Sub-clients count, Client Airtime, Gross Billings, Wholesale Cost, Net Profit Earned.
@@ -192,7 +203,8 @@ def get_reseller_overview(reseller_id: str):
 # 3. Sub-Client Management
 # -----------------------------------------------------------------------------
 @reseller_guard.get("/clients")
-def list_sub_clients(reseller_id: str):
+def list_sub_clients(reseller_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_reseller)):
+    reseller_id = _own_reseller_id(auth, reseller_id)
     """List all business tenants managed by this reseller partner."""
     with sync_engine.connect() as conn:
         # Get reseller wholesale rate
@@ -239,7 +251,9 @@ def list_sub_clients(reseller_id: str):
 
 
 @reseller_guard.post("/clients")
-def create_sub_client(req: SubClientCreateRequest):
+def create_sub_client(req: SubClientCreateRequest, auth: Dict[str, Any] = Depends(get_current_reseller)):
+    reseller_id = _own_reseller_id(auth, req.reseller_id)
+    password = validate_new_password(req.password)
     """
     Onboards a new client business under this reseller.
     Automatically assigns an available DID from phone_number_pool.
@@ -259,15 +273,33 @@ def create_sub_client(req: SubClientCreateRequest):
         # Check reseller exists
         reseller = conn.execute(
             text("SELECT reseller_id, wholesale_rate_per_min FROM resellers WHERE reseller_id = :rid"),
-            {"rid": req.reseller_id}
+            {"rid": reseller_id}
         ).fetchone()
 
         if not reseller:
             raise HTTPException(status_code=404, detail="Reseller not found.")
 
-        # Allocate DID number
-        assigned_did = req.did_number
-        if not assigned_did or not assigned_did.strip():
+        # Opening client credit is funded from the reseller's own prepaid wallet
+        if req.initial_wallet_balance > 0:
+            debit = conn.execute(
+                text("UPDATE resellers SET wallet_balance = wallet_balance - :amt WHERE reseller_id = :rid AND wallet_balance >= :amt"),
+                {"amt": req.initial_wallet_balance, "rid": reseller_id}
+            )
+            if debit.rowcount == 0:
+                conn.rollback()
+                raise HTTPException(status_code=402, detail="Insufficient reseller wallet balance to fund the client's opening credit.")
+
+        # Allocate DID number (a requested number must be free in the pool)
+        assigned_did = (req.did_number or "").strip() or None
+        if assigned_did:
+            free = conn.execute(
+                text("SELECT number FROM phone_number_pool WHERE number = :num AND status = 'available'"),
+                {"num": assigned_did}
+            ).fetchone()
+            if not free:
+                conn.rollback()
+                raise HTTPException(status_code=409, detail="The requested number is not available for assignment.")
+        else:
             pool_row = conn.execute(
                 text("SELECT number FROM phone_number_pool WHERE status = 'available' LIMIT 1")
             ).fetchone()
@@ -285,10 +317,10 @@ def create_sub_client(req: SubClientCreateRequest):
             "tid": tenant_id,
             "name": req.business_name,
             "email": req.email,
-            "pwd": hash_password(req.password.strip() if req.password else "tenant123"),
+            "pwd": hash_password(password),
             "key": api_key,
             "plan": req.plan,
-            "rid": req.reseller_id,
+            "rid": reseller_id,
             "rate": req.retail_rate_per_min,
             "bal": req.initial_wallet_balance
         })
@@ -297,7 +329,7 @@ def create_sub_client(req: SubClientCreateRequest):
         conn.execute(text("""
             INSERT INTO tenant_phone_numbers (number, tenant_id, vendor, is_active)
             VALUES (:num, :tid, 'rpdigital', true)
-            ON CONFLICT (number) DO UPDATE SET tenant_id = EXCLUDED.tenant_id, is_active = true
+            ON CONFLICT (number) DO NOTHING
         """), {"num": assigned_did, "tid": tenant_id})
 
         # Update pool status
@@ -368,11 +400,21 @@ def create_sub_client(req: SubClientCreateRequest):
 
 
 @reseller_guard.post("/clients/{tenant_id}/rate")
-def update_sub_client_rate(tenant_id: str, req: SubClientRateRequest):
+def update_sub_client_rate(tenant_id: str, req: SubClientRateRequest, auth: Dict[str, Any] = Depends(get_current_reseller)):
     """Update retail rate per min for a sub-client."""
     if req.retail_rate_per_min <= 0:
         raise HTTPException(status_code=400, detail="Retail rate must be strictly greater than zero.")
+    authed_rid = auth.get("reseller_id")
     with sync_engine.connect() as conn:
+        tenant_row = conn.execute(
+            text("SELECT reseller_id FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id}
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(status_code=404, detail="Client tenant not found.")
+        if not auth.get("is_admin") and auth.get("role") != "superadmin":
+            if tenant_row[0] != authed_rid:
+                raise HTTPException(status_code=403, detail="Forbidden: This client tenant does not belong to your reseller account.")
         res = conn.execute(
             text("UPDATE tenants SET rate_per_min = :rate WHERE tenant_id = :tid"),
             {"rate": req.retail_rate_per_min, "tid": tenant_id}
@@ -384,19 +426,38 @@ def update_sub_client_rate(tenant_id: str, req: SubClientRateRequest):
 
 
 @reseller_guard.post("/clients/{tenant_id}/topup")
-def topup_sub_client_wallet(tenant_id: str, req: SubClientTopupRequest):
+def topup_sub_client_wallet(tenant_id: str, req: SubClientTopupRequest, auth: Dict[str, Any] = Depends(get_current_reseller)):
     """Add talktime credits to a sub-client wallet balance."""
     if req.amount <= 0:
         raise HTTPException(status_code=400, detail="Top-up amount must be strictly greater than zero.")
+    authed_rid = auth.get("reseller_id")
     with sync_engine.connect() as conn:
+        tenant_row = conn.execute(
+            text("SELECT reseller_id FROM tenants WHERE tenant_id = :tid"),
+            {"tid": tenant_id}
+        ).fetchone()
+        if not tenant_row:
+            raise HTTPException(status_code=404, detail="Client tenant not found.")
+        if not auth.get("is_admin") and auth.get("role") != "superadmin":
+            if tenant_row[0] != authed_rid:
+                raise HTTPException(status_code=403, detail="Forbidden: This client tenant does not belong to your reseller account.")
+        # Move credit from the reseller's wallet to the client's (never mint it)
+        debit = conn.execute(
+            text("UPDATE resellers SET wallet_balance = wallet_balance - :amt WHERE reseller_id = :rid AND wallet_balance >= :amt"),
+            {"amt": req.amount, "rid": tenant_row[0]}
+        )
+        if debit.rowcount == 0:
+            conn.rollback()
+            raise HTTPException(status_code=402, detail="Insufficient reseller wallet balance for this top-up.")
         res = conn.execute(
             text("UPDATE tenants SET wallet_balance = wallet_balance + :amt WHERE tenant_id = :tid"),
             {"amt": req.amount, "tid": tenant_id}
         )
-        conn.commit()
         if res.rowcount == 0:
+            conn.rollback()
             raise HTTPException(status_code=404, detail="Client tenant not found.")
-        
+        conn.commit()
+
         new_bal = conn.execute(
             text("SELECT wallet_balance FROM tenants WHERE tenant_id = :tid"),
             {"tid": tenant_id}
@@ -409,7 +470,10 @@ def topup_sub_client_wallet(tenant_id: str, req: SubClientTopupRequest):
 # 4. Whitelabel Branding Settings
 # -----------------------------------------------------------------------------
 @reseller_guard.post("/branding")
-def update_reseller_branding(req: ResellerBrandingRequest):
+def update_reseller_branding(req: ResellerBrandingRequest, auth: Dict[str, Any] = Depends(get_current_reseller)):
+    reseller_id = _own_reseller_id(auth, req.reseller_id)
+    if req.logo_url and not req.logo_url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="logo_url must be an https:// link.")
     """Customize reseller white-label branding."""
     import json
     brand_dict = {
@@ -421,7 +485,7 @@ def update_reseller_branding(req: ResellerBrandingRequest):
     with sync_engine.connect() as conn:
         res = conn.execute(
             text("UPDATE resellers SET branding = :brand WHERE reseller_id = :rid"),
-            {"brand": json.dumps(brand_dict), "rid": req.reseller_id}
+            {"brand": json.dumps(brand_dict), "rid": reseller_id}
         )
         conn.commit()
         if res.rowcount == 0:

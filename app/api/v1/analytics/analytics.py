@@ -3,11 +3,12 @@ Executive Analytics & Call Quality Monitoring API
 Computes core KPIs: Containment Rate, Lead Capture Rate, AHT, Sentiment Breakdown, and Cost.
 Runs asynchronously via AsyncSession to prevent blocking FastAPI event loop.
 """
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Dict, Any, Optional
 from app.db.session import get_db
+from app.core.auth import get_optional_tenant_auth, resolve_tenant_scope, tenant_alias_ids
 from app.config import settings
 
 router = APIRouter(prefix="/api/analytics", tags=["Executive Analytics"])
@@ -16,25 +17,51 @@ router = APIRouter(prefix="/api/analytics", tags=["Executive Analytics"])
 @router.get("/overview")
 async def get_analytics_overview(
     tenant_id: Optional[str] = Query(None, description="Filter metrics by tenant ID"),
+    auth: Optional[Dict[str, Any]] = Depends(get_optional_tenant_auth),
     db: AsyncSession = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Returns aggregated executive metrics for the dashboard asynchronously,
     strictly scoped by tenant when tenant_id is provided.
     """
+    empty_response = {
+        "status": "success",
+        "metrics": {
+            "total_calls": 0,
+            "transferred_calls": 0,
+            "containment_rate": 100.0,
+            "total_leads": 0,
+            "lead_capture_rate": 0.0,
+            "total_airtime_seconds": 0,
+            "total_airtime_formatted": "0m 0s",
+            "average_handling_time_seconds": 0,
+            "estimated_cost_inr": 0.0,
+            "sentiment_breakdown": {},
+            "outcome_breakdown": {}
+        }
+    }
+
+    # Strict multi-tenant isolation:
+    # 1. Anonymous callers cannot view platform-wide or tenant metrics
+    if not auth:
+        return empty_response
+
+    # 2. Tenants are pinned to their workspace; resellers must name one of their tenants;
+    #    only SuperAdmins may view platform-wide metrics (no tenant_id).
+    requested = tenant_id.strip() if tenant_id and tenant_id.strip() else None
+    if auth.get("is_admin") and not requested:
+        scoped_tid = None
+    else:
+        scoped_tid = resolve_tenant_scope(auth, requested)
+
     try:
         where_clause = ""
         params = {}
-        if tenant_id and tenant_id.strip():
-            tid = tenant_id.strip()
-            where_clause = """
-                WHERE tenant_id = :tid 
-                   OR tenant_id IN (
-                       SELECT t2.tenant_id FROM tenants t2 
-                       WHERE t2.business_name ILIKE (SELECT t1.business_name FROM tenants t1 WHERE t1.tenant_id = :tid LIMIT 1)
-                   )
-            """
-            params["tid"] = tid
+        if scoped_tid:
+            alias_ids = tenant_alias_ids(scoped_tid)
+            placeholders = ", ".join(f":tid{i}" for i in range(len(alias_ids)))
+            where_clause = f"WHERE tenant_id IN ({placeholders})"
+            params = {f"tid{i}": t for i, t in enumerate(alias_ids)}
 
         # 1. Calls aggregate
         result = await db.execute(text(f"""
@@ -129,7 +156,7 @@ async def get_analytics_overview(
     except Exception as e:
         return {
             "status": "error",
-            "message": str(e),
+            "message": "Failed to compute analytics.",
             "metrics": {
                 "total_calls": 0,
                 "transferred_calls": 0,

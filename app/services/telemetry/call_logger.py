@@ -212,17 +212,28 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
         now = datetime.utcnow()
         try:
             with sync_engine.connect() as conn:
-                # 1. Update call end time and calculate duration
+                # 1. Fetch start_time to compute duration accurately across both SQLite and PostgreSQL
+                start_row = conn.execute(text("SELECT start_time FROM calls WHERE call_id = :cid"), {"cid": call_id}).fetchone()
+                dur_sec = 0.0
+                if start_row and start_row[0]:
+                    start_val = start_row[0]
+                    if isinstance(start_val, str):
+                        try:
+                            start_val = datetime.fromisoformat(start_val.replace('Z', '+00:00')).replace(tzinfo=None)
+                        except Exception:
+                            start_val = now
+                    dur_sec = max(0.0, (now - start_val).total_seconds())
+
                 conn.execute(
                     text("""
                         UPDATE calls 
                         SET end_time = :now, 
-                            duration = GREATEST(0.0, EXTRACT(EPOCH FROM (:now - start_time))),
+                            duration = :dur,
                             outcome_tag = :tag, 
                             transferred = :tr 
                         WHERE call_id = :cid
                     """),
-                    {"now": now, "tag": outcome_tag, "tr": transferred, "cid": call_id}
+                    {"now": now, "dur": dur_sec, "tag": outcome_tag, "tr": transferred, "cid": call_id}
                 )
                 conn.commit()
 
@@ -267,12 +278,12 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
 
                                 # Deduct from client wallet
                                 conn.execute(
-                                    text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
+                                    text("UPDATE tenants SET wallet_balance = CASE WHEN (wallet_balance - :chg) > 0 THEN (wallet_balance - :chg) ELSE 0.0 END WHERE tenant_id = :tid"),
                                     {"chg": client_charge, "tid": tenant_id}
                                 )
                                 # Deduct wholesale cost from reseller wallet
                                 conn.execute(
-                                    text("UPDATE resellers SET wallet_balance = GREATEST(0.0, wallet_balance - :cst) WHERE reseller_id = :rid"),
+                                    text("UPDATE resellers SET wallet_balance = CASE WHEN (wallet_balance - :cst) > 0 THEN (wallet_balance - :cst) ELSE 0.0 END WHERE reseller_id = :rid"),
                                     {"cst": reseller_cost, "rid": reseller_id}
                                 )
                             else:
@@ -283,7 +294,7 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
 
                                 # Deduct from client wallet
                                 conn.execute(
-                                    text("UPDATE tenants SET wallet_balance = GREATEST(0.0, wallet_balance - :chg) WHERE tenant_id = :tid"),
+                                    text("UPDATE tenants SET wallet_balance = CASE WHEN (wallet_balance - :chg) > 0 THEN (wallet_balance - :chg) ELSE 0.0 END WHERE tenant_id = :tid"),
                                     {"chg": client_charge, "tid": tenant_id}
                                 )
 

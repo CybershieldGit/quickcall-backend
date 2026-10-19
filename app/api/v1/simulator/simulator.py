@@ -2,21 +2,48 @@
 Web Simulator API — Powers the in-browser voice call simulator UI.
 Supports: text turns, Deepgram audio STT turns, TTS audio generation, session management.
 """
+import re
 import uuid
 import tempfile
 import os
 from typing import Optional, List, Dict, Any
-from fastapi import APIRouter, Response, HTTPException, UploadFile, File, Form, Query
+from fastapi import APIRouter, Response, HTTPException, UploadFile, File, Form, Query, Depends
 from pydantic import BaseModel
+from app.core.auth import get_current_tenant_auth, get_current_admin, resolve_tenant_scope, verify_tenant_access
+from app.core.rate_limit import enforce_rate_limit
 from app.core.voice_agent import (
     VoiceAgent, SESSIONS, _resolve_tenant_from_did, generate_executive_summary,
     _get_business_info, get_tenant_greeting
 )
-from app.core.tenant_service import load_tenant_config
+from app.core.tenant_service import load_tenant_config, normalize_tenant_id
 from app.core.tts_engine import generate_speech, set_runtime_tts_engine
 from app.config import settings
 
 router = APIRouter(prefix="/api/sim", tags=["Web Simulator"])
+
+_SIM_SESSION_RE = re.compile(r"^sim_[0-9a-f]{8,32}$")
+_MAX_SIM_TEXT = 1000
+_MAX_AUDIO_BYTES = 5 * 1024 * 1024
+
+
+def _sim_session_id(requested: Optional[str], tenant_id: str) -> str:
+    """Accepts only simulator session IDs that belong to the caller's tenant; otherwise starts a new one."""
+    if requested and _SIM_SESSION_RE.match(requested):
+        existing = SESSIONS.get(requested)
+        if not existing or existing.get("tenant_id") == normalize_tenant_id(tenant_id):
+            return requested
+    elif requested:
+        raise HTTPException(status_code=400, detail="Invalid simulator session_id.")
+    return f"sim_{uuid.uuid4().hex[:16]}"
+
+
+def _authorized_sim_session(session_id: str, auth: Dict[str, Any]) -> Dict[str, Any]:
+    if not _SIM_SESSION_RE.match(session_id or ""):
+        raise HTTPException(status_code=404, detail="Session not found")
+    session = SESSIONS.get(session_id)
+    if not session or not verify_tenant_access(session.get("tenant_id", ""), auth):
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
 
 
 class TurnRequest(BaseModel):
@@ -26,14 +53,15 @@ class TurnRequest(BaseModel):
     text: Optional[str] = None
     query: Optional[str] = None
     message: Optional[str] = None
-    tenant_id: str = "idigitalstudies"
+    tenant_id: Optional[str] = None
 
 
 @router.post("/start")
-async def start_session(tenant_id: str = "idigitalstudies"):
+def start_session(tenant_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Creates a new simulator session and returns the greeting text."""
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
     try:
-        session_id = f"sim_{uuid.uuid4().hex[:8]}"
+        session_id = f"sim_{uuid.uuid4().hex[:16]}"
         agent = VoiceAgent(call_id=session_id, tenant_id=tenant_id, caller_number="web-simulator")
         greeting = agent.get_greeting()
         return {
@@ -45,16 +73,18 @@ async def start_session(tenant_id: str = "idigitalstudies"):
         }
     except Exception as e:
         print(f"[Simulator API] Start session error: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start simulator session: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to start simulator session.")
 
 
 @router.post("/turn")
-async def text_turn(req: TurnRequest):
+def text_turn(req: TurnRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Process a conversation turn with flexible payload support."""
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
+    enforce_rate_limit(f"sim_turn:{tenant_id}", limit=120, window_seconds=600)
+    call_id = _sim_session_id(req.session_id or req.call_id, tenant_id)
+    speech = (req.query or req.message or req.user_speech or req.text or "").strip()[:_MAX_SIM_TEXT]
     try:
-        call_id = req.session_id or req.call_id or f"sim_{uuid.uuid4().hex[:8]}"
-        speech = (req.query or req.message or req.user_speech or req.text or "").strip()
-        agent = VoiceAgent(call_id=call_id, tenant_id=req.tenant_id, caller_number="web-simulator")
+        agent = VoiceAgent(call_id=call_id, tenant_id=tenant_id, caller_number="web-simulator")
         result = agent.process_turn(speech)
         return {
             "session_id": call_id,
@@ -69,14 +99,19 @@ async def text_turn(req: TurnRequest):
         }
     except Exception as e:
         print(f"[Simulator API] Text turn error: {e}")
-        raise HTTPException(status_code=500, detail=f"Error processing turn: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error processing turn.")
 
 
 @router.get("/resolve_did")
-async def test_resolve_did(phone_number: str = Query(..., description="Phone number or DID to test")):
+def test_resolve_did(
+    phone_number: str = Query(..., description="Phone number or DID to test"),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
+):
     """Simulates inbound DID dialing to test multi-tenant phone routing."""
     clean_num = phone_number.strip()
     tid = _resolve_tenant_from_did(clean_num)
+    if not verify_tenant_access(tid, auth):
+        raise HTTPException(status_code=404, detail="This number is not routed to your workspace.")
     cfg = load_tenant_config(tid) or {}
     b_name, advisor = _get_business_info(tid, cfg)
     greeting = get_tenant_greeting(tid, cfg)
@@ -93,13 +128,19 @@ async def test_resolve_did(phone_number: str = Query(..., description="Phone num
 
 
 @router.get("/tenants")
-async def list_simulator_tenants():
-    """Lists available tenants for testing with their bound phone numbers."""
+def list_simulator_tenants(auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    """Lists tenants visible to the caller (admin: all, reseller: own clients, tenant: itself) with bound numbers."""
     from sqlalchemy import text
     from app.db.session import sync_engine
+    if auth.get("is_admin"):
+        scope_sql, scope_params = "", {}
+    elif auth.get("role") == "reseller":
+        scope_sql, scope_params = "AND t.reseller_id = :rid", {"rid": auth.get("reseller_id")}
+    else:
+        scope_sql, scope_params = "AND t.tenant_id = :tid", {"tid": auth.get("tenant_id")}
     try:
         with sync_engine.connect() as conn:
-            rows = conn.execute(text("""
+            rows = conn.execute(text(f"""
                 SELECT t.tenant_id, t.business_name, t.plan, t.telephony_mode,
                        COALESCE(string_agg(DISTINCT nums.number, ', '), '') as numbers
                 FROM tenants t
@@ -108,10 +149,10 @@ async def list_simulator_tenants():
                     UNION
                     SELECT assigned_tenant_id as tenant_id, number FROM phone_number_pool WHERE status = 'assigned'
                 ) nums ON nums.tenant_id = t.tenant_id
-                WHERE t.status = 'active'
+                WHERE t.status = 'active' {scope_sql}
                 GROUP BY t.tenant_id, t.business_name, t.plan, t.telephony_mode, t.created_at
                 ORDER BY t.created_at DESC
-            """)).fetchall()
+            """), scope_params).fetchall()
 
         result = []
         for r in rows:
@@ -128,7 +169,7 @@ async def list_simulator_tenants():
 
 
 @router.get("/system-status")
-async def get_system_status():
+async def get_system_status(auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Returns active TTS engine, voice model, and telephony readiness."""
     active_voice = (
         getattr(settings, "DEEPGRAM_VOICE_MODEL", "aura-asteria-en")
@@ -143,12 +184,14 @@ async def get_system_status():
         "deepgram_configured": bool(settings.DEEPGRAM_API_KEY),
         "sarvam_configured": bool(settings.SARVAM_API_KEY),
         "exotel_configured": bool(settings.EXOTEL_ACCOUNT_SID),
-        "default_escalation_number": settings.DEFAULT_ESCALATION_NUMBER
     }
 
 
 @router.post("/set-tts")
-async def set_tts(engine: str = Query(..., description="deepgram or sarvam")):
+async def set_tts(
+    engine: str = Query(..., description="deepgram or sarvam"),
+    admin_user: Dict[str, Any] = Depends(get_current_admin)
+):
     """Dynamically toggle TTS engine between deepgram (testing) and sarvam (production)."""
     try:
         new_engine = set_runtime_tts_engine(engine)
@@ -162,18 +205,21 @@ async def set_tts(engine: str = Query(..., description="deepgram or sarvam")):
 
 
 @router.get("/cache-questions")
-async def get_cache_questions(tenant_id: Optional[str] = None):
+def get_cache_questions(tenant_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Returns all FAQ questions currently vector-cached and frequency-tracked in Redis."""
     from app.core.semantic_cache import get_all_cached_questions
+    if not (auth.get("is_admin") and not tenant_id):
+        tenant_id = resolve_tenant_scope(auth, tenant_id)
     return get_all_cached_questions(tenant_id=tenant_id)
 
 
 
 @router.post("/audio_turn")
-async def audio_turn(
+def audio_turn(
     session_id: str = Form(...),
-    tenant_id: str = Form(default="idigitalstudies"),
-    file: UploadFile = File(...)
+    tenant_id: Optional[str] = Form(default=None),
+    file: UploadFile = File(...),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
 ):
     """
     Accepts browser-recorded audio (webm/wav), transcribes via Deepgram v6, then processes agent turn.
@@ -181,10 +227,15 @@ async def audio_turn(
     """
     if not settings.DEEPGRAM_API_KEY:
         raise HTTPException(status_code=400, detail="DEEPGRAM_API_KEY is not configured.")
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
+    enforce_rate_limit(f"sim_turn:{tenant_id}", limit=120, window_seconds=600)
+    session_id = _sim_session_id(session_id, tenant_id)
+    audio_content = file.file.read(_MAX_AUDIO_BYTES + 1)
+    if len(audio_content) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="Audio clip is too large.")
 
     tmp_path = None
     try:
-        audio_content = await file.read()
         suffix = ".webm" if "webm" in (file.content_type or "") else ".wav"
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -231,29 +282,31 @@ async def audio_turn(
 
     except Exception as e:
         print(f"[AudioTurn Error] {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Error processing audio turn.")
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
 
 @router.get("/tts")
-async def get_tts(text: str, voice: str = "en-US-AvaNeural"):
+async def get_tts(text: str, voice: str = "en-US-AvaNeural", auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Generates and returns spoken audio (WAV/MP3) for the given text."""
+    if len(text) > _MAX_SIM_TEXT:
+        raise HTTPException(status_code=400, detail="Text is too long.")
+    enforce_rate_limit(f"sim_tts:{auth.get('tenant_id') or auth.get('reseller_id') or 'admin'}", limit=120, window_seconds=600)
     try:
         audio_bytes = await generate_speech(text, voice_name=voice)
         media_type = "audio/wav" if audio_bytes.startswith(b"RIFF") else "audio/mpeg"
         return Response(content=audio_bytes, media_type=media_type)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Simulator TTS Error] {e}")
+        raise HTTPException(status_code=500, detail="Speech synthesis failed.")
 
 
 @router.get("/session/{session_id}")
-async def get_session_info(session_id: str):
-    """Returns current state and history for a session (useful for debug/transcript view)."""
-    if session_id not in SESSIONS:
-        raise HTTPException(status_code=404, detail="Session not found")
-    session = SESSIONS[session_id]
+def get_session_info(session_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    """Returns current state and history for a simulator session owned by the caller."""
+    session = _authorized_sim_session(session_id, auth)
     return {
         "session_id": session_id,
         "state": session["state"],
@@ -264,10 +317,10 @@ async def get_session_info(session_id: str):
 
 
 @router.post("/summarize/{session_id}")
-async def summarize_simulator_session(session_id: str):
+def summarize_simulator_session(session_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Generate or retrieve the AI executive brief note & summary for a simulator session."""
-    session = SESSIONS.get(session_id)
-    history = session.get("history") if session else None
-    outcome = session.get("state", "completed") if session else "completed"
+    session = _authorized_sim_session(session_id, auth)
+    history = session.get("history")
+    outcome = session.get("state", "completed")
     res = generate_executive_summary(call_id=session_id, history=history, outcome=outcome)
     return {"session_id": session_id, **res}

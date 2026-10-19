@@ -148,13 +148,32 @@ async def keepalive_ping_tts():
 
 
 def clean_text_for_speech(text: str) -> str:
-    """Strip markdown formatting, asterisks, bullet points, brackets."""
+    """Strip markdown formatting, asterisks, bullet points, brackets, and format emails for speech."""
     if not text:
         return ""
     text = re.sub(r'[*#`_~]', '', text)
     text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)  # Markdown links
+
+    # 1. Expand raw email addresses (e.g. 'arpansharma917@gmail.com' -> 'arpansharma nine one seven at gmail dot com')
+    if "@" in text:
+        from app.services.messaging.brochure_service import format_email_for_speech
+        email_regex = r'\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+\b'
+        text = re.sub(email_regex, lambda m: format_email_for_speech(m.group(0)), text)
+
+    # 2. Fix already-spoken emails with fused digits before 'at' (e.g. 'arpansharma917 at gmail dot com')
+    # TTS engines like Deepgram Aura drop numeric suffixes when fused to letters in email handles.
+    if " at " in text and " dot " in text:
+        from app.services.messaging.brochure_service import format_email_for_speech
+        spoken_email_regex = r'\b([a-zA-Z0-9_.-]+)\s+at\s+([a-zA-Z0-9.-]+)\s+dot\s+([a-zA-Z]+(?:\s+dot\s+[a-zA-Z]+)?)\b'
+        def _fix_spoken_email(m):
+            dom = m.group(3).replace(" dot ", ".")
+            raw = f"{m.group(1)}@{m.group(2)}.{dom}"
+            return format_email_for_speech(raw)
+        text = re.sub(spoken_email_regex, _fix_spoken_email, text, flags=re.IGNORECASE)
+
     text = re.sub(r'\s+', ' ', text).strip()
     return text
+
 
 
 def chunk_pcm_audio(pcm_data: bytes, chunk_size: int = 640) -> List[bytes]:

@@ -5,16 +5,20 @@ Provides:
 - Signed JWT token creation and verification (HS256)
 - Role-based FastAPI dependency guards for SuperAdmin, Resellers, and Tenants
 - Tenant isolation and BOLA / IDOR protection
+
+Identity is only ever established from a signed JWT or a stored API key.
+Request-supplied tenant identifiers (headers, query, path, body) are never trusted
+as authentication; they are checked against the caller's identity via
+verify_tenant_access / resolve_tenant_scope.
 """
-import os
 import hmac
 import hashlib
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Dict, Any, List
 
 import jwt
-from fastapi import Header, Depends, HTTPException, status
+from fastapi import Header, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import text
 
@@ -22,6 +26,16 @@ from app.config import settings
 from app.db.session import sync_engine
 
 security_scheme = HTTPBearer(auto_error=False)
+
+# Demo / seed passwords that must never authenticate anyone
+KNOWN_DEFAULT_PASSWORDS = frozenset({"admin123", "tenant123", "partner123", "password", "changeme"})
+MIN_PASSWORD_LENGTH = 8
+
+# Explicit tenant ID aliases for legacy pilot tenants whose data was written under two IDs
+_TENANT_ALIAS_GROUPS = (
+    ("cl_idigitalstudie_82d5", "idigitalstudies"),
+    ("phonotel", "phono_tel"),
+)
 
 
 # -----------------------------------------------------------------------------
@@ -40,32 +54,38 @@ def hash_password(password: str) -> str:
 
 
 def verify_password(plain_password: str, stored_hash: Optional[str]) -> bool:
-    """
-    Verifies a plain password against stored hash.
-    Supports PBKDF2-SHA256 and gracefully falls back to legacy plaintext for migration.
-    """
-    if not stored_hash:
+    """Verifies a plain password against a stored PBKDF2-SHA256 hash. Plaintext hashes are rejected."""
+    if not plain_password or not stored_hash or not stored_hash.startswith("pbkdf2:sha256:"):
+        return False
+    try:
+        parts = stored_hash.split("$")
+        if len(parts) != 3:
+            return False
+        rounds = int(parts[0].split(":")[2])
+        computed = hashlib.pbkdf2_hmac(
+            "sha256",
+            plain_password.encode("utf-8"),
+            parts[1].encode("utf-8"),
+            rounds
+        ).hex()
+        return hmac.compare_digest(computed, parts[2])
+    except Exception:
         return False
 
-    if stored_hash.startswith("pbkdf2:sha256:"):
-        try:
-            parts = stored_hash.split("$")
-            if len(parts) == 3:
-                rounds = int(parts[0].split(":")[2])
-                salt = parts[1]
-                expected_key = parts[2]
-                computed = hashlib.pbkdf2_hmac(
-                    "sha256",
-                    plain_password.encode("utf-8"),
-                    salt.encode("utf-8"),
-                    rounds
-                ).hex()
-                return hmac.compare_digest(computed, expected_key)
-        except Exception:
-            return False
 
-    # Fallback legacy plaintext comparison for demo credentials
-    return hmac.compare_digest(plain_password, stored_hash)
+def validate_new_password(password: Optional[str]) -> str:
+    """Validates a password being set; raises 400 when it's missing, short, or a known default."""
+    pwd = (password or "").strip()
+    if len(pwd) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(status_code=400, detail=f"Password must be at least {MIN_PASSWORD_LENGTH} characters.")
+    if pwd.lower() in KNOWN_DEFAULT_PASSWORDS:
+        raise HTTPException(status_code=400, detail="This password is a known default and cannot be used.")
+    return pwd
+
+
+def check_login_password(plain_password: str, stored_hash: Optional[str]) -> bool:
+    """Verifies user login password against stored hash."""
+    return verify_password(plain_password, stored_hash)
 
 
 # -----------------------------------------------------------------------------
@@ -73,17 +93,27 @@ def verify_password(plain_password: str, stored_hash: Optional[str]) -> bool:
 # -----------------------------------------------------------------------------
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=settings.JWT_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+    now = datetime.now(timezone.utc)
+    expire = now + (expires_delta or timedelta(minutes=settings.JWT_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire, "iat": now})
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
     try:
-        payload = jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
-        return payload
+        return jwt.decode(token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except jwt.PyJWTError:
         return None
+
+
+def _bearer_payload(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[Dict[str, Any]]:
+    if credentials and credentials.credentials:
+        return decode_access_token(credentials.credentials)
+    return None
+
+
+def _is_admin_payload(payload: Optional[Dict[str, Any]]) -> bool:
+    return bool(payload) and payload.get("role") in ("superadmin", "admin")
 
 
 # -----------------------------------------------------------------------------
@@ -91,19 +121,11 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 # -----------------------------------------------------------------------------
 def get_current_admin(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
-    x_admin_key: Optional[str] = Header(None, alias="X-Admin-Key")
 ) -> Dict[str, Any]:
-    """Guards SuperAdmin endpoints. Requires valid JWT with role 'superadmin' or master admin key."""
-    # Master key bypass (if configured)
-    if x_admin_key and x_admin_key == getattr(settings, "ADMIN_PASSWORD", None):
-        return {"admin_id": "master_admin", "role": "superadmin", "email": settings.ADMIN_EMAIL}
-
-    if credentials and credentials.credentials:
-        token = credentials.credentials
-        payload = decode_access_token(token)
-        if payload and payload.get("role") in ("superadmin", "admin"):
-            return payload
-
+    """Guards SuperAdmin endpoints. Requires a valid JWT with role 'superadmin' or 'admin'."""
+    payload = _bearer_payload(credentials)
+    if _is_admin_payload(payload):
+        return {**payload, "role": "superadmin", "is_admin": True}
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="SuperAdmin authentication required. Please provide a valid Bearer token.",
@@ -115,12 +137,10 @@ def get_current_reseller(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key")
 ) -> Dict[str, Any]:
-    """Guards Reseller Partner endpoints. Requires valid reseller JWT or reseller API key."""
-    if credentials and credentials.credentials:
-        token = credentials.credentials
-        payload = decode_access_token(token)
-        if payload and (payload.get("role") == "reseller" or payload.get("reseller_id")):
-            return payload
+    """Guards Reseller Partner endpoints. Requires a reseller JWT or an active reseller API key."""
+    payload = _bearer_payload(credentials)
+    if payload and payload.get("role") == "reseller" and payload.get("reseller_id"):
+        return payload
 
     if x_api_key:
         with sync_engine.connect() as conn:
@@ -138,23 +158,19 @@ def get_current_reseller(
     )
 
 
-def get_current_tenant_auth(
-    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
-    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
-    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID")
-) -> Dict[str, Any]:
-    """Guards Tenant self-serve endpoints. Accepts SuperAdmin, Reseller, or Tenant API Key."""
-    # SuperAdmin or Reseller token can manage tenants
-    if credentials and credentials.credentials:
-        token = credentials.credentials
-        payload = decode_access_token(token)
-        if payload:
-            if payload.get("role") in ("superadmin", "admin"):
-                return {"role": "superadmin", "is_admin": True}
-            if payload.get("tenant_id"):
-                return {"tenant_id": payload["tenant_id"], "role": "tenant", "is_admin": False}
-            if payload.get("reseller_id"):
-                return {"reseller_id": payload["reseller_id"], "role": "reseller", "is_admin": False}
+def _authenticate_principal(
+    credentials: Optional[HTTPAuthorizationCredentials],
+    x_api_key: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Resolves the caller from a signed JWT or a stored tenant API key. Returns None if neither is valid."""
+    payload = _bearer_payload(credentials)
+    if payload:
+        if _is_admin_payload(payload):
+            return {"role": "superadmin", "is_admin": True}
+        if payload.get("role") == "tenant" and payload.get("tenant_id"):
+            return {"tenant_id": payload["tenant_id"], "role": "tenant", "is_admin": False}
+        if payload.get("role") == "reseller" and payload.get("reseller_id"):
+            return {"reseller_id": payload["reseller_id"], "role": "reseller", "is_admin": False}
 
     if x_api_key:
         with sync_engine.connect() as conn:
@@ -164,17 +180,18 @@ def get_current_tenant_auth(
             ).fetchone()
             if row and row[2] == "active":
                 return {"tenant_id": row[0], "business_name": row[1], "role": "tenant", "is_admin": False}
+    return None
 
-    # Allow access for active tenant requests if verified against database
-    if x_tenant_id:
-        with sync_engine.connect() as conn:
-            row = conn.execute(
-                text("SELECT tenant_id, business_name, status FROM tenants WHERE tenant_id = :tid"),
-                {"tid": x_tenant_id.strip()}
-            ).fetchone()
-            if row and row[2] == "active":
-                return {"tenant_id": row[0], "business_name": row[1], "role": "tenant", "is_admin": False}
 
+def get_current_tenant_auth(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> Dict[str, Any]:
+    """Guards tenant endpoints. Accepts a SuperAdmin/Reseller/Tenant JWT or a tenant API key."""
+    principal = _authenticate_principal(credentials, x_api_key)
+    if principal:
+        return principal
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Authentication required. Please provide a valid Bearer token or X-API-Key.",
@@ -182,20 +199,88 @@ def get_current_tenant_auth(
     )
 
 
-def verify_tenant_access(requested_tenant_id: str, auth: Dict[str, Any]) -> bool:
-    """Enforces BOLA/IDOR isolation: ensures caller has rights to the requested tenant."""
+def get_optional_tenant_auth(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+) -> Optional[Dict[str, Any]]:
+    """Optional auth helper: returns the authenticated principal or None."""
+    return _authenticate_principal(credentials, x_api_key)
+
+
+# -----------------------------------------------------------------------------
+# 4. Tenant Isolation Helpers
+# -----------------------------------------------------------------------------
+def tenant_alias_ids(tenant_id: str) -> List[str]:
+    """Returns the tenant ID plus any explicitly configured legacy aliases for it."""
+    for group in _TENANT_ALIAS_GROUPS:
+        if tenant_id in group:
+            return list(group)
+    return [tenant_id]
+
+
+def tenant_canonical_alias(tenant_id: str) -> str:
+    """Returns the paired legacy alias for a pilot tenant ID, or the ID itself (exact match only)."""
+    for alias in tenant_alias_ids(tenant_id):
+        if alias != tenant_id:
+            return alias
+    return tenant_id
+
+
+def verify_tenant_access(requested_tenant_id: str, auth: Optional[Dict[str, Any]]) -> bool:
+    """Enforces strict BOLA/IDOR isolation: ensures caller has rights to the requested tenant."""
+    if not auth or not requested_tenant_id:
+        return False
     if auth.get("is_admin") or auth.get("role") == "superadmin":
         return True
     caller_tenant = auth.get("tenant_id")
-    if caller_tenant and caller_tenant == requested_tenant_id:
-        return True
-    # If reseller, check if tenant belongs to this reseller
+    if caller_tenant:
+        return requested_tenant_id in tenant_alias_ids(caller_tenant)
     if auth.get("role") == "reseller" and auth.get("reseller_id"):
         with sync_engine.connect() as conn:
             row = conn.execute(
                 text("SELECT reseller_id FROM tenants WHERE tenant_id = :tid"),
                 {"tid": requested_tenant_id}
             ).fetchone()
-            if row and row[0] == auth["reseller_id"]:
-                return True
+            return bool(row and row[0] == auth["reseller_id"])
     return False
+
+
+def resolve_tenant_scope(auth: Dict[str, Any], requested_tenant_id: Optional[str] = None) -> str:
+    """
+    Returns the tenant_id the caller may act on.
+    Tenants are pinned to their own workspace; admins and resellers must name a tenant they can access.
+    """
+    requested = (requested_tenant_id or "").strip()
+    if auth.get("role") == "tenant" and auth.get("tenant_id"):
+        own = auth["tenant_id"]
+        if requested and requested not in tenant_alias_ids(own):
+            raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to access this tenant.")
+        return own
+    if not requested:
+        raise HTTPException(status_code=400, detail="tenant_id is required.")
+    if not verify_tenant_access(requested, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to access this tenant.")
+    return requested
+
+
+# -----------------------------------------------------------------------------
+# 5. Telephony Webhook / Bridge Tokens
+# -----------------------------------------------------------------------------
+def verify_exotel_token(token: Optional[str]) -> bool:
+    """Checks the shared ?token= on Exotel webhooks/streams. Open only when EXOTEL_WEBHOOK_TOKEN is unset (startup warns)."""
+    expected = settings.EXOTEL_WEBHOOK_TOKEN
+    if not expected:
+        return True
+    return bool(token) and hmac.compare_digest(token, expected)
+
+
+def require_exotel_token(request: Request) -> None:
+    """FastAPI dependency for Exotel HTTP webhooks."""
+    if not verify_exotel_token(request.query_params.get("token")):
+        raise HTTPException(status_code=403, detail="Invalid webhook token.")
+
+
+def verify_internal_bridge_token(token: Optional[str]) -> bool:
+    """Checks the token the in-process SIP client presents to the /sip/stream loopback WebSocket."""
+    return bool(token) and hmac.compare_digest(token, settings.INTERNAL_BRIDGE_TOKEN)

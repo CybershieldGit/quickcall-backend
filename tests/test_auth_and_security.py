@@ -27,7 +27,7 @@ def test_password_hashing():
     assert verify_password(raw, hashed), "Password verification failed"
     assert not verify_password("wrong_password", hashed), "False positive on wrong password"
     # Legacy migration check
-    assert verify_password("partner123", "partner123"), "Legacy plaintext verification failed"
+    assert not verify_password("partner123", "partner123"), "Plaintext stored passwords must never verify"
     print("✅ Password hashing & verification passed.")
 
 def test_ssrf_sandbox():

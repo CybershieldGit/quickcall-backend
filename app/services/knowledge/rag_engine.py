@@ -96,9 +96,9 @@ def warmup_rag(tenant_id: str = "idigitalstudies"):
 
             if not rows:
                 candidates = []
-                if tenant_id.startswith("cl_idigital") or "digital" in tenant_id.lower() or tenant_id == "idigitalstudies":
+                if tenant_id in ("cl_idigitalstudie_82d5", "idigitalstudies", "ids"):
                     candidates = ["cl_idigitalstudie_82d5", "idigitalstudies"]
-                elif tenant_id.startswith("cl_phono") or "phono" in tenant_id.lower():
+                elif tenant_id in ("phonotel", "phono_tel", "phono-tel"):
                     candidates = ["phonotel"]
 
                 for cand in candidates:
@@ -188,9 +188,9 @@ def get_tenant_knowledge_text(tenant_id: str) -> str:
             # If no rows found, check normalized tenant or related aliases
             if not rows:
                 candidates = []
-                if tenant_id.startswith("cl_idigital") or "digital" in tenant_id.lower() or tenant_id == "idigitalstudies":
+                if tenant_id in ("cl_idigitalstudie_82d5", "idigitalstudies", "ids"):
                     candidates = ["cl_idigitalstudie_82d5", "idigitalstudies"]
-                elif tenant_id.startswith("cl_phono") or "phono" in tenant_id.lower():
+                elif tenant_id in ("phonotel", "phono_tel", "phono-tel"):
                     candidates = ["phonotel"]
 
                 for cand in candidates:

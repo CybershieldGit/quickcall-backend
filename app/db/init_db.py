@@ -31,6 +31,11 @@ def init_database():
                 );
                 CREATE INDEX IF NOT EXISTS ix_agents_tenant_id ON agents (tenant_id);
                 ALTER TABLE tenant_phone_numbers ADD COLUMN IF NOT EXISTS assigned_agent_id VARCHAR(64);
+                ALTER TABLE tenant_phone_numbers ADD COLUMN IF NOT EXISTS sip_extension VARCHAR(32);
+                ALTER TABLE tenant_phone_numbers ADD COLUMN IF NOT EXISTS sip_password VARCHAR(256);
+                ALTER TABLE phone_number_pool ADD COLUMN IF NOT EXISTS sip_password VARCHAR(256);
+                ALTER TABLE tenant_phone_numbers ALTER COLUMN sip_password TYPE VARCHAR(256);
+                ALTER TABLE phone_number_pool ALTER COLUMN sip_password TYPE VARCHAR(256);
                 ALTER TABLE calls ADD COLUMN IF NOT EXISTS agent_id VARCHAR(64);
                 ALTER TABLE calls ADD COLUMN IF NOT EXISTS summary TEXT;
                 ALTER TABLE calls ADD COLUMN IF NOT EXISTS primary_concern VARCHAR(255);
@@ -46,51 +51,60 @@ def init_database():
             conn.commit()
         print("✅ Schema migrations applied for agents, calls, and tenants tables.")
 
-        # Seed Default Platform SuperAdmin & Demo Reseller
+        # Seed / secure the Platform SuperAdmin and Demo Reseller (never with default credentials)
         with sync_engine.connect() as conn:
-            from app.core.auth import hash_password
-            # Seed SuperAdmin
-            admin_check = conn.execute(text("SELECT admin_id, password_hash FROM admin_users WHERE email = 'admin@qwickcall.ai'")).fetchone()
+            import secrets as _secrets
+            from app.core.auth import hash_password, verify_password, KNOWN_DEFAULT_PASSWORDS
+
+            def _is_weak(stored: str) -> bool:
+                if not stored:
+                    return True
+                if not stored.startswith("pbkdf2:sha256:"):
+                    return True  # legacy plaintext
+                return any(verify_password(d, stored) for d in KNOWN_DEFAULT_PASSWORDS)
+
+            def _replacement_hash() -> str:
+                # Use ADMIN_PASSWORD when it's strong; otherwise an unusable random hash (reset via scripts/set_password.py)
+                env_pwd = settings.ADMIN_PASSWORD or ""
+                if len(env_pwd) >= 8 and env_pwd.lower() not in KNOWN_DEFAULT_PASSWORDS:
+                    return hash_password(env_pwd)
+                return hash_password(_secrets.token_urlsafe(32))
+
+            admin_check = conn.execute(text("SELECT admin_id, password_hash FROM admin_users WHERE email = :e"), {"e": settings.ADMIN_EMAIL}).fetchone()
             if not admin_check:
                 conn.execute(
                     text("""
                         INSERT INTO admin_users (admin_id, email, password_hash, name, role)
-                        VALUES ('admin_root', 'admin@qwickcall.ai', :pwd, 'Platform SuperAdmin', 'superadmin')
+                        VALUES ('admin_root', :e, :pwd, 'Platform SuperAdmin', 'superadmin')
                         ON CONFLICT (email) DO NOTHING
                     """),
-                    {"pwd": hash_password("admin123")}
+                    {"e": settings.ADMIN_EMAIL, "pwd": _replacement_hash()}
                 )
-                print("👑 Seeded Platform SuperAdmin (admin@qwickcall.ai).")
-            elif admin_check[1] == "admin123":
+                print(f"👑 Seeded Platform SuperAdmin ({settings.ADMIN_EMAIL}).")
+            elif _is_weak(admin_check[1]):
                 conn.execute(
-                    text("UPDATE admin_users SET password_hash = :pwd WHERE email = 'admin@qwickcall.ai'"),
-                    {"pwd": hash_password("admin123")}
+                    text("UPDATE admin_users SET password_hash = :pwd WHERE admin_id = :aid"),
+                    {"pwd": _replacement_hash(), "aid": admin_check[0]}
                 )
+                print("🔒 Replaced default/plaintext SuperAdmin password.")
 
-            # Seed Demo Reseller
-            reseller_check = conn.execute(text("SELECT reseller_id, password_hash FROM resellers WHERE reseller_id = 'partner_apex'")).fetchone()
-            if not reseller_check:
-                conn.execute(
-                    text("""
-                        INSERT INTO resellers (reseller_id, name, company_name, email, password_hash, api_key, status, wholesale_rate_per_min, wallet_balance, branding)
-                        VALUES ('partner_apex', 'Rajesh Sharma', 'Apex AI Voice Solutions', 'partner@apexsolutions.in', :pwd, 'qck_reseller_apex99', 'active', 3.00, 2500.0, '{"portal_title": "Apex AI Voice Partner", "logo_url": "", "support_email": "support@apexsolutions.in"}')
-                        ON CONFLICT (reseller_id) DO NOTHING
-                    """),
-                    {"pwd": hash_password("partner123")}
-                )
-                print("🤝 Seeded Demo Reseller partner_apex (wholesale rate: ₹3.00/min).")
-            elif reseller_check[1] == "partner123":
-                conn.execute(
-                    text("UPDATE resellers SET password_hash = :pwd WHERE reseller_id = 'partner_apex'"),
-                    {"pwd": hash_password("partner123")}
-                )
+            # Accounts still on default passwords can no longer log in; flag them for reset
+            for tbl, idc in (("tenants", "tenant_id"), ("resellers", "reseller_id")):
+                for rid, stored in conn.execute(text(f"SELECT {idc}, password_hash FROM {tbl}")).fetchall():
+                    if _is_weak(stored):
+                        print(f"⚠️ {tbl}.{rid} uses a default or missing password. Set one with: python scripts/set_password.py {tbl[:-1]} {rid}")
+
+            # Rotate the publicly known demo reseller API key
+            conn.execute(
+                text("UPDATE resellers SET api_key = :k WHERE api_key = 'qck_reseller_apex99'"),
+                {"k": f"qck_res_{_secrets.token_hex(16)}"}
+            )
             conn.commit()
 
         # Seed Telephony Phone Number Inventory Pool (available for assignment via frontend)
         with sync_engine.connect() as conn:
             initial_pool = [
                 ("+917935486072", "rpdigital", "08239"),
-                ("+917935486072", "rpdigital", None),
                 ("08239", "rpdigital", "08239"),
                 ("+919513886363", "exotel", None),
                 ("+918037091588", "exotel", None),

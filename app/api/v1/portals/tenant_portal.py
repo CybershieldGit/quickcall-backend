@@ -13,21 +13,91 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Depends, Request
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db.session import sync_engine
-from app.core.pdf_processor import (
+from app.services.knowledge.pdf_processor import (
     extract_text_from_pdf, chunk_business_knowledge, parse_team_directory_with_llm
 )
-from app.core import rag_engine
+from app.services.knowledge import rag_engine
 from app.core.tenant_service import _TENANT_CONFIG_CACHE, clear_did_cache, clear_agent_cache
-from app.core.auth import create_access_token, get_current_tenant_auth, verify_tenant_access, verify_password, hash_password
+from app.core.auth import (
+    create_access_token, get_current_tenant_auth, verify_tenant_access, hash_password,
+    check_login_password, validate_new_password, resolve_tenant_scope, tenant_alias_ids, tenant_canonical_alias,
+)
+from app.core.secrets_box import encrypt_secret
+from app.core.rate_limit import rate_limit_request, enforce_rate_limit
 import ipaddress
 import socket
+
+_TENANT_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+_MAX_REDIRECTS = 5
+
+
+def _alias_query(sql: str):
+    """Binds :tids as an expanding IN-list of the tenant's exact ID aliases."""
+    return text(sql).bindparams(bindparam("tids", expanding=True))
+
+
+_PHONE_RE = re.compile(r"^\+?[0-9]{10,15}$")
+
+
+def _validate_escalation_number(raw: Optional[str]) -> Optional[str]:
+    """Escalation targets receive live transfers on platform trunks: require a plain 10-15 digit number."""
+    if raw is None:
+        return None
+    num = raw.replace(" ", "").replace("-", "").strip()
+    if not num:
+        return None
+    if not _PHONE_RE.match(num):
+        raise HTTPException(status_code=400, detail="escalation_number must be a 10-15 digit phone number.")
+    return num
+
+
+def _validate_tenant_id_format(tid: str) -> str:
+    tid = (tid or "").strip()
+    if not _TENANT_ID_RE.match(tid):
+        raise HTTPException(status_code=400, detail="Invalid tenant_id.")
+    return tid
+
+
+def _read_pdf_upload(file: UploadFile) -> bytes:
+    """Reads an uploaded PDF with a hard size cap and magic-byte check."""
+    if not (file.filename or "").lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported.")
+    content = file.file.read(settings.MAX_UPLOAD_BYTES + 1)
+    if len(content) > settings.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"File exceeds the {settings.MAX_UPLOAD_BYTES // (1024 * 1024)} MB upload limit.")
+    if len(content) < 100 or not content.startswith(b"%PDF"):
+        raise HTTPException(status_code=400, detail="Uploaded file is empty, corrupted, or not a PDF.")
+    return content
+
+
+def _safe_fetch_html(url: str) -> str:
+    """Fetches a public web page, re-validating the destination on every redirect hop (SSRF guard)."""
+    import httpx
+    headers = {"User-Agent": "QwickCall-AI-Crawler/1.0 (+https://qwickcall.ai)"}
+    current = url
+    with httpx.Client(timeout=10.0, follow_redirects=False) as client:
+        for _ in range(_MAX_REDIRECTS + 1):
+            if not is_safe_external_url(current):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Forbidden URL. Localhost, private RFC1918 subnets, and metadata endpoints are prohibited."
+                )
+            res = client.get(current, headers=headers)
+            if res.is_redirect and res.headers.get("location"):
+                current = str(res.url.join(res.headers["location"]))
+                continue
+            if res.status_code != 200:
+                raise HTTPException(status_code=400, detail=f"Failed to fetch website (HTTP {res.status_code})")
+            return res.text[:2_000_000]
+    raise HTTPException(status_code=400, detail="Too many redirects while fetching website.")
 
 def is_safe_external_url(url: str) -> bool:
     try:
@@ -43,8 +113,11 @@ def is_safe_external_url(url: str) -> bool:
         for item in addr_info:
             ip_str = item[4][0]
             ip_obj = ipaddress.ip_address(ip_str)
+            if getattr(ip_obj, "ipv4_mapped", None):
+                ip_obj = ip_obj.ipv4_mapped
             if (
                 ip_obj.is_loopback
+                or ip_obj.is_unspecified
                 or ip_obj.is_private
                 or ip_obj.is_link_local
                 or ip_obj.is_reserved
@@ -65,6 +138,7 @@ router = APIRouter(prefix="/api/v1/tenant", tags=["Tenant SaaS Portal"])
 class TenantRegisterRequest(BaseModel):
     business_name: str
     email: str
+    password: str
     plan: str = "starter"  # starter | growth | enterprise
     telephony_mode: str = "master_pool"  # master_pool | byoc
     did_number: Optional[str] = None  # Optional RP Digital DID provided by enterprise
@@ -77,6 +151,20 @@ class TelephonySettingsRequest(BaseModel):
     exotel_api_key: Optional[str] = None
     exotel_api_token: Optional[str] = None
     exotel_caller_id: Optional[str] = None
+
+
+class MessagingSettingsRequest(BaseModel):
+    tenant_id: str
+    sender_email: Optional[str] = None
+    sender_name: Optional[str] = None
+    reply_to_email: Optional[str] = None
+    brochure_url: Optional[str] = None
+    brochure_title: Optional[str] = None
+    email_subject: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    smtp_user: Optional[str] = None
+    smtp_password: Optional[str] = None
 
 
 class AssignNumberRequest(BaseModel):
@@ -141,125 +229,128 @@ class LeadCreateRequest(BaseModel):
 # 1. Tenant Registration & Demo Login (DID-based Multi-Tenant Model)
 # -----------------------------------------------------------------------------
 @router.post("/register")
-async def register_tenant(req: TenantRegisterRequest):
+def register_tenant(req: TenantRegisterRequest, request: Request):
     """
-    Registers a new brand/vendor on the platform.
-    The Tenant UID is directly assigned by their RP Digital DID phone number.
-    Allocates an available DID from phone_number_pool if not explicitly provided.
+    Self-serve registration for a new brand/vendor.
+    The Tenant UID is derived from the DID allocated to it from the platform pool.
+    A requested did_number is honoured only if that number is currently available in the pool.
     """
-    assigned_did = None
+    rate_limit_request(request, "tenant_register", limit=5, window_seconds=3600)
+
+    business_name = (req.business_name or "").strip()
+    email = (req.email or "").strip().lower()
+    if not business_name or len(business_name) > 200:
+        raise HTTPException(status_code=400, detail="A business name (max 200 characters) is required.")
+    if "@" not in email or len(email) > 255:
+        raise HTTPException(status_code=400, detail="A valid email address is required.")
+    password = validate_new_password(req.password)
+    plan = req.plan if req.plan in ("starter", "growth", "enterprise") else "starter"
+    telephony_mode = req.telephony_mode if req.telephony_mode in ("master_pool", "byoc") else "master_pool"
+
     with sync_engine.connect() as conn:
-        # 1. Determine DID number: from request or allocate from pool
-        if req.did_number and req.did_number.strip():
-            assigned_did = req.did_number.strip()
+        existing = conn.execute(
+            text("SELECT tenant_id FROM tenants WHERE LOWER(email) = :email"),
+            {"email": email}
+        ).fetchone()
+        if existing:
+            raise HTTPException(status_code=409, detail="An account with this email already exists. Please sign in instead.")
+
+        # 1. Determine DID number: an available pool number (requested or next free) or a virtual placeholder
+        assigned_did = None
+        requested_did = (req.did_number or "").strip()
+        if requested_did:
+            pool_row = conn.execute(
+                text("SELECT number FROM phone_number_pool WHERE number = :num AND status = 'available'"),
+                {"num": requested_did}
+            ).fetchone()
+            if not pool_row:
+                raise HTTPException(status_code=409, detail="The requested number is not available for assignment.")
+            assigned_did = pool_row[0]
         else:
-            # Query the next available number from the RP Digital pool
             pool_row = conn.execute(
                 text("""
-                    SELECT number FROM phone_number_pool 
-                    WHERE status = 'available' AND vendor = 'rpdigital' 
+                    SELECT number FROM phone_number_pool
+                    WHERE status = 'available' AND vendor = 'rpdigital'
                     LIMIT 1
                 """)
             ).fetchone()
             if pool_row:
                 assigned_did = pool_row[0]
             else:
-                # Dynamic fallback virtual DID if pool empty
-                slug_num = "".join(filter(str.isdigit, req.business_name))[:6] or uuid.uuid4().hex[:6]
-                assigned_did = f"+9173{slug_num.ljust(8, '0')[:8]}"
+                assigned_did = f"+9173{uuid.uuid4().int % 10**8:08d}"
 
         # 2. Assign Tenant UID by their DID number
         clean_digits = "".join(filter(str.isdigit, assigned_did))
         tenant_id = f"did_{clean_digits}" if clean_digits else f"did_{uuid.uuid4().hex[:8]}"
+        if conn.execute(text("SELECT 1 FROM tenants WHERE tenant_id = :tid"), {"tid": tenant_id}).fetchone():
+            tenant_id = f"{tenant_id}_{uuid.uuid4().hex[:4]}"
 
-        # Generate secure tenant API key
         api_key = f"qck_live_{uuid.uuid4().hex}"
 
-        # 3. Check if tenant already exists by email or tenant_id
-        existing = conn.execute(
-            text("SELECT tenant_id, api_key FROM tenants WHERE tenant_id = :tid OR email = :email"),
-            {"tid": tenant_id, "email": req.email}
-        ).fetchone()
+        conn.execute(
+            text("""
+                INSERT INTO tenants (tenant_id, business_name, email, password_hash, api_key, plan, telephony_mode, status)
+                VALUES (:tid, :name, :email, :pwd, :key, :plan, :mode, 'active')
+            """),
+            {
+                "tid": tenant_id,
+                "name": business_name,
+                "email": email,
+                "pwd": hash_password(password),
+                "key": api_key,
+                "plan": plan,
+                "mode": telephony_mode
+            }
+        )
 
-        if existing:
-            tenant_id = existing[0]
-            api_key = existing[1] or api_key
-            conn.execute(
-                text("""
-                    UPDATE tenants 
-                    SET business_name = :name, plan = :plan, telephony_mode = :mode, api_key = COALESCE(api_key, :key)
-                    WHERE tenant_id = :tid
-                """),
-                {"name": req.business_name, "plan": req.plan, "mode": req.telephony_mode, "key": api_key, "tid": tenant_id}
-            )
-            conn.commit()
-        else:
-            # Insert new tenant with DID-based UID
-            conn.execute(
-                text("""
-                    INSERT INTO tenants (tenant_id, business_name, email, api_key, plan, telephony_mode, status)
-                    VALUES (:tid, :name, :email, :key, :plan, :mode, 'active')
-                """),
-                {
-                    "tid": tenant_id,
-                    "name": req.business_name,
-                    "email": req.email,
-                    "key": api_key,
-                    "plan": req.plan,
-                    "mode": req.telephony_mode
-                }
-            )
+        default_persona = (
+            f"You are a helpful, professional customer advisor for {business_name}. "
+            f"Answer caller questions accurately, warmly, and concisely in 1-2 spoken sentences."
+        )
+        conn.execute(
+            text("""
+                INSERT INTO tenant_config (config_id, tenant_id, version, persona, business_rules, escalation_number, is_active)
+                VALUES (:cid, :tid, 1, :persona, :rules, :esc, true)
+                ON CONFLICT DO NOTHING
+            """),
+            {
+                "cid": uuid.uuid4().hex,
+                "tid": tenant_id,
+                "persona": default_persona,
+                "rules": '{"team_routing": []}',
+                "esc": settings.DEFAULT_ESCALATION_NUMBER
+            }
+        )
 
-            # Insert default TenantConfig with dynamic persona
-            default_persona = (
-                f"You are a helpful, professional customer advisor for {req.business_name}. "
-                f"Answer caller questions accurately, warmly, and concisely in 1-2 spoken sentences."
-            )
-            conn.execute(
-                text("""
-                    INSERT INTO tenant_config (config_id, tenant_id, version, persona, business_rules, escalation_number, is_active)
-                    VALUES (:cid, :tid, 1, :persona, :rules, :esc, true)
-                    ON CONFLICT DO NOTHING
-                """),
-                {
-                    "cid": uuid.uuid4().hex,
-                    "tid": tenant_id,
-                    "persona": default_persona,
-                    "rules": '{"team_routing": []}',
-                    "esc": settings.DEFAULT_ESCALATION_NUMBER
-                }
-            )
-
-            # Bind DID to tenant in tenant_phone_numbers
-            conn.execute(
-                text("""
-                    INSERT INTO tenant_phone_numbers (number, tenant_id, vendor, is_active)
-                    VALUES (:num, :tid, 'rpdigital', true)
-                    ON CONFLICT (number) DO UPDATE SET tenant_id = :tid, vendor = 'rpdigital', is_active = true
-                """),
-                {"num": assigned_did, "tid": tenant_id}
-            )
-
-            # Mark number as assigned in phone_number_pool
-            conn.execute(
-                text("""
-                    INSERT INTO phone_number_pool (number, vendor, status, assigned_tenant_id)
-                    VALUES (:num, 'rpdigital', 'assigned', :tid)
-                    ON CONFLICT (number) DO UPDATE SET status = 'assigned', assigned_tenant_id = :tid
-                """),
-                {"num": assigned_did, "tid": tenant_id}
-            )
-            conn.commit()
+        # Bind DID only if no other tenant owns it (never steal an existing binding)
+        conn.execute(
+            text("""
+                INSERT INTO tenant_phone_numbers (number, tenant_id, vendor, is_active)
+                VALUES (:num, :tid, 'rpdigital', true)
+                ON CONFLICT (number) DO NOTHING
+            """),
+            {"num": assigned_did, "tid": tenant_id}
+        )
+        conn.execute(
+            text("""
+                INSERT INTO phone_number_pool (number, vendor, status, assigned_tenant_id)
+                VALUES (:num, 'rpdigital', 'assigned', :tid)
+                ON CONFLICT (number) DO UPDATE SET status = 'assigned', assigned_tenant_id = :tid
+                WHERE phone_number_pool.status = 'available'
+            """),
+            {"num": assigned_did, "tid": tenant_id}
+        )
+        conn.commit()
 
     return {
         "status": "success",
-        "message": f"Tenant '{req.business_name}' successfully provisioned with DID-assigned UID!",
+        "message": f"Tenant '{business_name}' successfully provisioned with DID-assigned UID!",
         "tenant_id": tenant_id,
         "assigned_did": assigned_did,
         "api_key": api_key,
-        "business_name": req.business_name,
-        "plan": req.plan,
-        "telephony_mode": req.telephony_mode
+        "business_name": business_name,
+        "plan": plan,
+        "telephony_mode": telephony_mode
     }
 
 
@@ -269,59 +360,49 @@ class TenantLoginRequest(BaseModel):
 
 
 @router.post("/login")
-def login_tenant(req: TenantLoginRequest):
-    """Authenticate tenant client via password."""
+def login_tenant(req: TenantLoginRequest, request: Request):
+    """Authenticate tenant client via Tenant ID or registered email + password."""
     identifier = (req.username or "").strip()
     pwd = req.password or ""
 
-    if not identifier:
-        raise HTTPException(status_code=400, detail="Tenant ID or registered Email is required.")
+    if not identifier or not pwd:
+        raise HTTPException(status_code=400, detail="Tenant ID or registered Email and password are required.")
+    rate_limit_request(request, "tenant_login", limit=10, window_seconds=300)
+    enforce_rate_limit(f"tenant_login_account:{identifier.lower()}", limit=20, window_seconds=900)
 
     with sync_engine.connect() as conn:
         tenant = conn.execute(
             text("""
                 SELECT tenant_id, business_name, email, plan, telephony_mode, status, password_hash
                 FROM tenants
-                WHERE tenant_id = :tid OR email = :tid OR business_name ILIKE :tid
+                WHERE tenant_id = :tid OR LOWER(email) = LOWER(:tid)
                 LIMIT 1
             """),
             {"tid": identifier}
         ).fetchone()
 
-        if not tenant:
-            raise HTTPException(status_code=404, detail=f"Vendor workspace '{identifier}' not found.")
-
-        stored_hash = tenant[6]
-        # Verify credentials against stored PBKDF2 hash (fallback: default password)
-        if stored_hash:
-            if not pwd or not verify_password(pwd, stored_hash):
-                if not (pwd == "tenant123" and (stored_hash == "tenant123" or verify_password("tenant123", stored_hash))):
-                    raise HTTPException(status_code=401, detail="Invalid tenant login credentials.")
-        else:
-            if pwd and pwd != "tenant123":
-                raise HTTPException(status_code=401, detail="Invalid tenant login credentials.")
+        # Same response for unknown account and wrong password (no account enumeration)
+        if not tenant or not check_login_password(pwd, tenant[6]):
+            raise HTTPException(status_code=401, detail="Invalid tenant login credentials.")
 
         if tenant[5] and tenant[5] != "active":
             raise HTTPException(status_code=403, detail="Tenant workspace is currently suspended.")
 
-        # Fetch assigned phone numbers
         numbers = conn.execute(
             text("SELECT number, vendor, is_active FROM tenant_phone_numbers WHERE tenant_id = :tid"),
             {"tid": tenant[0]}
         ).fetchall()
 
-        # Fetch knowledge count
         k_count = conn.execute(
             text("SELECT COUNT(*) FROM knowledge_chunks WHERE tenant_id = :tid"),
             {"tid": tenant[0]}
         ).scalar() or 0
 
-        # Fetch team routing rules
         cfg = conn.execute(
             text("SELECT business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
             {"tid": tenant[0]}
         ).fetchone()
-        
+
         team_routing = []
         if cfg and cfg[0]:
             import json
@@ -352,10 +433,11 @@ tenant_guard = APIRouter(dependencies=[Depends(get_current_tenant_auth)])
 # 2. Dual-PDF Ingestion (Slot 1: Overview, Slot 2: Product Catalog) & Website Ingestion
 # -----------------------------------------------------------------------------
 @tenant_guard.post("/upload-knowledge-pdf")
-async def upload_knowledge_pdf(
+def upload_knowledge_pdf(
     tenant_id: str = Form(...),
     file: UploadFile = File(...),
-    slot: Optional[str] = Form("slot1")  # slot1 (Overview) | slot2 (Catalog) | custom
+    slot: Optional[str] = Form("slot1"),  # slot1 (Overview) | slot2 (Catalog) | custom
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
 ):
     """
     Ingests Business Knowledge PDF into Dual-PDF Slots:
@@ -364,18 +446,15 @@ async def upload_knowledge_pdf(
     Extracts text, builds semantic chunks (~200 words), computes vector embeddings,
     and stores them strictly isolated under this tenant_id in pgvector.
     """
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported for Knowledge Base ingestion.")
-
-    content = await file.read()
-    if len(content) < 100:
-        raise HTTPException(status_code=400, detail="Uploaded PDF file is empty or corrupted.")
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
+    slot = re.sub(r"[^A-Za-z0-9 _\-]", "", slot or "slot1")[:40] or "slot1"
+    content = _read_pdf_upload(file)
 
     # 1. Extract text from PDF
     try:
         raw_text = extract_text_from_pdf(content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to extract PDF text: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to extract text from the PDF.")
 
     if not raw_text or len(raw_text.strip()) < 50:
         raise HTTPException(status_code=400, detail="No readable text found in PDF. Make sure it's not a scanned image PDF.")
@@ -429,38 +508,26 @@ async def upload_knowledge_pdf(
 
 
 @tenant_guard.post("/scrape-website")
-async def scrape_website_knowledge(req: WebsiteScrapeRequest):
+def scrape_website_knowledge(req: WebsiteScrapeRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """
     Website & Sitemap Ingestion:
     Fetches the company website, extracts clean text, computes vector embeddings,
     and indexes them into the tenant's RAG knowledge base.
     """
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
     url = req.website_url.strip()
     if not url.startswith("http://") and not url.startswith("https://"):
         url = "https://" + url
 
-    if not is_safe_external_url(url):
-        raise HTTPException(
-            status_code=400,
-            detail="Forbidden URL. Localhost, private RFC1918 subnets, and metadata endpoints are prohibited."
-        )
-
+    import httpx
     try:
-        import httpx
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            headers = {"User-Agent": "QwickCall-AI-Crawler/1.0 (+https://qwickcall.ai)"}
-            res = await client.get(url, headers=headers)
-            if res.status_code != 200:
-                raise HTTPException(status_code=400, detail=f"Failed to fetch website (HTTP {res.status_code})")
-            html_text = res.text
+        html_text = _safe_fetch_html(url)
     except HTTPException:
         raise
     except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail=f"Website request timed out while fetching {url}")
-    except httpx.RequestError as re:
-        raise HTTPException(status_code=400, detail=f"Failed to connect to website: {str(re)}")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Website fetch error: {str(e)}")
+        raise HTTPException(status_code=504, detail="Website request timed out.")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to connect to website.")
 
     # Clean HTML: remove script/style tags and extract text
     cleaned_html = re.sub(r'<(script|style|noscript)[^>]*>.*?</\1>', ' ', html_text, flags=re.DOTALL | re.IGNORECASE)
@@ -473,7 +540,7 @@ async def scrape_website_knowledge(req: WebsiteScrapeRequest):
 
     parsed = urlparse(url)
     doc_label = f"[Website] {parsed.netloc}{parsed.path[:20]}"
-    chunks = chunk_business_knowledge(clean_text[:15000], tenant_id=req.tenant_id, source_doc=doc_label)
+    chunks = chunk_business_knowledge(clean_text[:15000], tenant_id=tenant_id, source_doc=doc_label)
 
     if not chunks:
         raise HTTPException(status_code=400, detail="Could not chunk website content.")
@@ -482,7 +549,7 @@ async def scrape_website_knowledge(req: WebsiteScrapeRequest):
     with sync_engine.connect() as conn:
         conn.execute(
             text("DELETE FROM knowledge_chunks WHERE tenant_id = :tid AND source_doc LIKE '[Website]%'"),
-            {"tid": req.tenant_id}
+            {"tid": tenant_id}
         )
         for c in chunks:
             cid = uuid.uuid4().hex
@@ -494,7 +561,7 @@ async def scrape_website_knowledge(req: WebsiteScrapeRequest):
                 """),
                 {
                     "cid": cid,
-                    "tid": req.tenant_id,
+                    "tid": tenant_id,
                     "doc": c["source_doc"],
                     "txt": c["chunk_text"],
                     "emb": emb_json
@@ -502,7 +569,7 @@ async def scrape_website_knowledge(req: WebsiteScrapeRequest):
             )
         conn.commit()
 
-    rag_engine.invalidate_tenant_rag_cache(req.tenant_id)
+    rag_engine.invalidate_tenant_rag_cache(tenant_id)
 
     return {
         "status": "success",
@@ -514,7 +581,9 @@ async def scrape_website_knowledge(req: WebsiteScrapeRequest):
 
 
 @tenant_guard.get("/knowledge")
-def get_tenant_knowledge(tenant_id: str):
+def get_tenant_knowledge(tenant_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to access knowledge for this tenant.")
     """Retrieve indexed knowledge chunks for a tenant."""
     with sync_engine.connect() as conn:
         rows = conn.execute(
@@ -535,26 +604,23 @@ def get_tenant_knowledge(tenant_id: str):
 # 3. Dual-PDF Ingestion (PDF 2: Team & Department Directory)
 # -----------------------------------------------------------------------------
 @tenant_guard.post("/upload-team-pdf")
-async def upload_team_pdf(
+def upload_team_pdf(
     tenant_id: str = Form(...),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
 ):
     """
     Ingests Team & Escalation Directory PDF (PDF 2):
     Parses staff names, departments (Admissions, Billing, Support), and direct phone numbers
     using Groq LLM, saving them as structured routing rules in tenant_config.
     """
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported for Team Directory ingestion.")
-
-    content = await file.read()
-    if len(content) < 100:
-        raise HTTPException(status_code=400, detail="Uploaded PDF file is empty or corrupted.")
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
+    content = _read_pdf_upload(file)
 
     try:
         raw_text = extract_text_from_pdf(content)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to extract PDF text: {str(e)}")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to extract text from the PDF.")
 
     # Parse team structure via Groq LLM
     routes = parse_team_directory_with_llm(raw_text)
@@ -615,8 +681,11 @@ async def upload_team_pdf(
 # 4. Telephony Settings (Master Pool vs BYOC) & Numbers
 # -----------------------------------------------------------------------------
 @tenant_guard.post("/telephony-settings")
-async def update_telephony_settings(req: TelephonySettingsRequest):
+def update_telephony_settings(req: TelephonySettingsRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Updates tenant's telephony mode (Master Pool or BYOC Exotel credentials)."""
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
+    if req.telephony_mode not in ("master_pool", "byoc"):
+        raise HTTPException(status_code=400, detail="telephony_mode must be 'master_pool' or 'byoc'.")
     with sync_engine.connect() as conn:
         conn.execute(
             text("""
@@ -632,14 +701,16 @@ async def update_telephony_settings(req: TelephonySettingsRequest):
                 "mode": req.telephony_mode,
                 "sid": req.exotel_account_sid,
                 "key": req.exotel_api_key,
-                "tok": req.exotel_api_token,
+                "tok": encrypt_secret(req.exotel_api_token),
                 "cid": req.exotel_caller_id,
-                "tid": req.tenant_id
+                "tid": tenant_id
             }
         )
         conn.commit()
 
-    _TENANT_CONFIG_CACHE.pop(req.tenant_id, None)
+    from app.services.tenant.tenant_service import _TENANT_CREDENTIALS_CACHE
+    _TENANT_CONFIG_CACHE.pop(tenant_id, None)
+    _TENANT_CREDENTIALS_CACHE.pop(tenant_id, None)
 
     return {
         "status": "success",
@@ -648,8 +719,248 @@ async def update_telephony_settings(req: TelephonySettingsRequest):
     }
 
 
+# -----------------------------------------------------------------------------
+# 5. Per-Tenant Messaging & Brochure Settings
+# -----------------------------------------------------------------------------
+@tenant_guard.post("/messaging-settings")
+def update_messaging_settings(req: MessagingSettingsRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    """
+    Updates tenant-specific email sender branding, reply-to, custom SMTP credentials,
+    and official brochure URL & title.
+    """
+    import json
+    tid = resolve_tenant_scope(auth, req.tenant_id)
+    if req.brochure_url and not req.brochure_url.strip().startswith(("https://", "http://", "/api/v1/tenant/brochure/")):
+        raise HTTPException(status_code=400, detail="brochure_url must be an http(s) link.")
+    if req.sender_email and "@" not in req.sender_email:
+        raise HTTPException(status_code=400, detail="sender_email must be a valid email address.")
+    with sync_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT config_id, business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
+            {"tid": tid}
+        ).fetchone()
+
+        rules = row[1] if row and isinstance(row[1], dict) else json.loads(row[1] or "{}") if (row and row[1]) else {}
+
+        if req.sender_email is not None:
+            rules["sender_email"] = req.sender_email.strip()
+        if req.sender_name is not None:
+            rules["sender_name"] = req.sender_name.strip()
+        if req.reply_to_email is not None:
+            rules["reply_to_email"] = req.reply_to_email.strip()
+        if req.brochure_url is not None:
+            rules["brochure_url"] = req.brochure_url.strip()
+        if req.brochure_title is not None:
+            rules["brochure_title"] = req.brochure_title.strip()
+        if req.email_subject is not None:
+            rules["email_subject"] = req.email_subject.strip()
+
+        if req.smtp_host:
+            # Blank password keeps the stored one (the UI never receives it back)
+            new_pwd = (req.smtp_password or "").strip()
+            stored_pwd = (rules.get("smtp") or {}).get("password")
+            rules["smtp"] = {
+                "host": req.smtp_host.strip(),
+                "port": req.smtp_port or 587,
+                "user": (req.smtp_user or "").strip(),
+                "password": encrypt_secret(new_pwd) if new_pwd else stored_pwd
+            }
+        elif req.smtp_host == "":
+            rules.pop("smtp", None)
+
+        if row:
+            conn.execute(
+                text("UPDATE tenant_config SET business_rules = :rules WHERE config_id = :cid"),
+                {"rules": json.dumps(rules), "cid": row[0]}
+            )
+        else:
+            cid = uuid.uuid4().hex
+            conn.execute(
+                text("""
+                    INSERT INTO tenant_config (config_id, tenant_id, version, persona, business_rules, escalation_number, is_active)
+                    VALUES (:cid, :tid, 1, 'You are a helpful customer advisor.', :rules, '+919560732274', true)
+                """),
+                {"cid": cid, "tid": tid, "rules": json.dumps(rules)}
+            )
+
+        # Sender email is branding only; it no longer rewrites the tenant's login email
+        conn.commit()
+
+    _TENANT_CONFIG_CACHE.pop(tid, None)
+    return {
+        "status": "success",
+        "message": f"Messaging & brochure settings updated for tenant '{tid}'.",
+        "settings": {
+            "sender_email": rules.get("sender_email"),
+            "sender_name": rules.get("sender_name"),
+            "reply_to_email": rules.get("reply_to_email"),
+            "brochure_url": rules.get("brochure_url"),
+            "brochure_title": rules.get("brochure_title"),
+            "email_subject": rules.get("email_subject"),
+            "has_custom_smtp": bool(rules.get("smtp", {}).get("host"))
+        }
+    }
+
+
+class TestSmtpRequest(BaseModel):
+    tenant_id: str
+    destination_email: str
+
+
+@tenant_guard.post("/test-email")
+async def test_tenant_smtp(req: TestSmtpRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    """
+    Sends an immediate verification email using the tenant's own custom SMTP credentials
+    to verify server connectivity, authentication, and delivery.
+    """
+    tid = resolve_tenant_scope(auth, req.tenant_id)
+    from app.services.messaging.brochure_service import send_email_message
+    import json
+
+    with sync_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
+            {"tid": tid}
+        ).fetchone()
+        rules = row[0] if row and isinstance(row[0], dict) else json.loads(row[0] or "{}") if (row and row[0]) else {}
+        smtp_cfg = rules.get("smtp") or {}
+        if not (smtp_cfg.get("host") and smtp_cfg.get("user") and smtp_cfg.get("password")):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Tenant '{tid}' has not configured custom SMTP credentials yet. Please fill in SMTP Host, Username, and App Password and click Save."
+            )
+
+    b_name = rules.get("sender_name") or "QwickCall Tenant"
+    res = await send_email_message(
+        to_email=str(req.destination_email).strip(),
+        subject=f"✅ Test Email from {b_name} — SMTP Connected Successfully",
+        body_text=f"""Hello!
+
+This is a verification email from your workspace at {b_name}.
+Your dedicated SMTP server is correctly authenticated and ready to dispatch brochures and lead notifications to your customers.
+
+Warm regards,
+{b_name} Operations""",
+        body_html=f"""
+        <div style="font-family: Arial, sans-serif; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px; max-width: 540px;">
+            <h2 style="color: #10b981; margin-top: 0;">✅ SMTP Connection Verified!</h2>
+            <p>Your workspace <strong>{b_name}</strong> is now configured to send emails directly using your own dedicated SMTP server.</p>
+            <p style="font-size: 13px; color: #6b7280;">Sent via tenant custom credentials (Host: {smtp_cfg.get('host')}:{smtp_cfg.get('port', 587)} | User: {smtp_cfg.get('user')})</p>
+        </div>
+        """,
+        tenant_id=tid
+    )
+    if res.get("status") == "delivered":
+        return {
+            "status": "success",
+            "message": f"Test email successfully delivered to {req.destination_email} via {smtp_cfg.get('host')}!",
+            "details": res
+        }
+    else:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to deliver email through your SMTP server: {res.get('error', 'Connection error')}"
+        )
+
+
+@tenant_guard.post("/upload-brochure")
+def upload_tenant_brochure(
+    tenant_id: str = Form(...),
+    file: UploadFile = File(...),
+    title: Optional[str] = Form(None),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
+):
+    """
+    Uploads and stores a tenant's official PDF brochure.
+    Saves to data/brochures/{tenant_id}_brochure.pdf and automatically
+    binds the downloadable URL /api/v1/tenant/brochure/{tenant_id} to tenant_config.
+    """
+    import os, json
+    tid = _validate_tenant_id_format(resolve_tenant_scope(auth, tenant_id))
+    content = _read_pdf_upload(file)
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    brochures_dir = os.path.join(base_dir, "data", "brochures")
+    os.makedirs(brochures_dir, exist_ok=True)
+    pdf_path = os.path.join(brochures_dir, f"{tid}_brochure.pdf")
+
+    with open(pdf_path, "wb") as f:
+        f.write(content)
+
+    brochure_url = f"/api/v1/tenant/brochure/{tid}"
+    brochure_title = (title or (file.filename or "Brochure").replace(".pdf", "").replace("_", " ").title())[:200]
+
+    with sync_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT config_id, business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
+            {"tid": tid}
+        ).fetchone()
+
+        rules = row[1] if row and isinstance(row[1], dict) else json.loads(row[1] or "{}") if (row and row[1]) else {}
+        rules["brochure_url"] = brochure_url
+        rules["brochure_title"] = brochure_title
+
+        if row:
+            conn.execute(
+                text("UPDATE tenant_config SET business_rules = :rules WHERE config_id = :cid"),
+                {"rules": json.dumps(rules), "cid": row[0]}
+            )
+        else:
+            cid = uuid.uuid4().hex
+            conn.execute(
+                text("""
+                    INSERT INTO tenant_config (config_id, tenant_id, version, persona, business_rules, escalation_number, is_active)
+                    VALUES (:cid, :tid, 1, 'You are a helpful customer advisor.', :rules, '+919560732274', true)
+                """),
+                {"cid": cid, "tid": tid, "rules": json.dumps(rules)}
+            )
+        conn.commit()
+
+    _TENANT_CONFIG_CACHE.pop(tid, None)
+    return {
+        "status": "success",
+        "message": f"Successfully uploaded brochure for tenant '{tid}'.",
+        "brochure_url": brochure_url,
+        "brochure_title": brochure_title
+    }
+
+
+@router.get("/brochure/{tenant_id}")
+def get_tenant_brochure(tenant_id: str):
+    """
+    Public downloadable endpoint for caller brochure delivery.
+    Delivers the tenant's uploaded PDF brochure directly to the customer.
+    """
+    import os, json
+    tid = _validate_tenant_id_format(tenant_id)
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+    brochures_dir = os.path.join(base_dir, "data", "brochures")
+    pdf_path = os.path.join(brochures_dir, f"{tid}_brochure.pdf")
+
+    if os.path.exists(pdf_path):
+        return FileResponse(
+            pdf_path,
+            media_type="application/pdf",
+            filename=f"{tid}_brochure.pdf"
+        )
+
+    # Check if external URL configured in tenant_config
+    with sync_engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
+            {"tid": tid}
+        ).fetchone()
+        if row and row[0]:
+            rules = row[0] if isinstance(row[0], dict) else json.loads(row[0] or "{}")
+            ext_url = rules.get("brochure_url")
+            if ext_url and ext_url.startswith(("http://", "https://")):
+                return RedirectResponse(url=ext_url)
+
+    raise HTTPException(status_code=404, detail="No brochure found for this tenant.")
+
+
 @tenant_guard.get("/available-numbers")
-async def get_available_numbers():
+def get_available_numbers():
     """Lists all telephony numbers currently available in the platform inventory pool."""
     with sync_engine.connect() as conn:
         rows = conn.execute(
@@ -670,7 +981,9 @@ async def get_available_numbers():
 
 
 @tenant_guard.get("/details/{tenant_id}")
-async def get_tenant_details(tenant_id: str):
+def get_tenant_details(tenant_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to access details for this tenant.")
     """
     Returns complete profile, configuration, assigned phone numbers,
     and live statistics for a specific tenant workspace.
@@ -682,8 +995,7 @@ async def get_tenant_details(tenant_id: str):
                        COALESCE(rate_per_min, 5.0) as rate_per_min,
                        COALESCE(wallet_balance, 500.0) as wallet_balance
                 FROM tenants 
-                WHERE tenant_id = :tid 
-                   OR business_name ILIKE :tid
+                WHERE tenant_id = :tid
                 LIMIT 1
             """),
             {"tid": tenant_id.strip()}
@@ -738,7 +1050,7 @@ async def get_tenant_details(tenant_id: str):
                 WHERE (tenant_id = :tid OR tenant_id = :canon) AND is_active = true
                 ORDER BY is_default DESC, created_at ASC
             """),
-            {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).fetchall()
 
         agents_list = [
@@ -762,7 +1074,7 @@ async def get_tenant_details(tenant_id: str):
         did_agent_map = {}
         for r in conn.execute(
             text("SELECT number, assigned_agent_id FROM tenant_phone_numbers WHERE (tenant_id = :tid OR tenant_id = :canon)"),
-            {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).fetchall():
             if r[0]:
                 did_agent_map[r[0]] = r[1]
@@ -793,15 +1105,8 @@ async def get_tenant_details(tenant_id: str):
 
         # Calls count
         c_count = conn.execute(
-            text("""
-                SELECT COUNT(*) FROM calls 
-                WHERE tenant_id = :tid 
-                   OR tenant_id IN (
-                       SELECT t2.tenant_id FROM tenants t2 
-                       WHERE t2.business_name ILIKE (SELECT t1.business_name FROM tenants t1 WHERE t1.tenant_id = :tid LIMIT 1)
-                   )
-            """),
-            {"tid": actual_tid}
+            _alias_query("SELECT COUNT(*) FROM calls WHERE tenant_id IN :tids"),
+            {"tids": tenant_alias_ids(actual_tid)}
         ).scalar() or 0
 
         # Config / persona / escalation
@@ -825,6 +1130,8 @@ async def get_tenant_details(tenant_id: str):
             if m:
                 advisor_name = m.group(1) or m.group(2) or advisor_name
 
+        rules = cfg[2] if cfg and isinstance(cfg[2], dict) else json.loads(cfg[2] or "{}") if (cfg and cfg[2]) else {}
+
     primary_did = assigned_numbers[0]["number"] if assigned_numbers else None
 
     return {
@@ -840,6 +1147,15 @@ async def get_tenant_details(tenant_id: str):
         "advisor_name": advisor_name,
         "escalation_number": escalation_number,
         "persona": persona,
+        "brochure_url": rules.get("brochure_url"),
+        "brochure_title": rules.get("brochure_title") or f"{tenant[1]} Official Brochure",
+        "sender_email": rules.get("sender_email") or tenant[2],
+        "sender_name": rules.get("sender_name") or tenant[1],
+        "reply_to_email": rules.get("reply_to_email") or rules.get("sender_email") or tenant[2],
+        "email_subject": rules.get("email_subject") or f"Your Requested Information & Brochure — {tenant[1]}",
+        "has_custom_smtp": bool(rules.get("smtp", {}).get("host")),
+        "smtp_host": rules.get("smtp", {}).get("host"),
+        "smtp_user": rules.get("smtp", {}).get("user"),
         "knowledge_chunks_count": k_count,
         "total_calls_count": c_count,
         "rate_per_min": round(float(tenant[7]), 2),
@@ -852,7 +1168,7 @@ async def get_tenant_details(tenant_id: str):
 
 
 @tenant_guard.post("/assign-number")
-async def assign_virtual_number(req: AssignNumberRequest):
+def assign_virtual_number(req: AssignNumberRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """
     Binds a phone number (DID) to a specific tenant.
     Updates tenant_phone_numbers, marks phone_number_pool as assigned,
@@ -866,15 +1182,31 @@ async def assign_virtual_number(req: AssignNumberRequest):
         clean_num = "+91" + clean_num
 
     vendor = req.vendor or ("rpdigital" if "731" in clean_num or len(clean_num) <= 6 else "exotel")
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
+    is_admin = bool(auth.get("is_admin"))
 
     with sync_engine.connect() as conn:
         # Verify tenant exists
         t_check = conn.execute(
             text("SELECT tenant_id, business_name FROM tenants WHERE tenant_id = :tid LIMIT 1"),
-            {"tid": req.tenant_id}
+            {"tid": tenant_id}
         ).fetchone()
         if not t_check:
-            raise HTTPException(status_code=404, detail=f"Tenant '{req.tenant_id}' not found.")
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+
+        # Non-admins may only claim numbers that are free in the inventory pool (or already theirs)
+        if not is_admin:
+            owner = conn.execute(
+                text("SELECT tenant_id FROM tenant_phone_numbers WHERE number = :num"),
+                {"num": clean_num}
+            ).fetchone()
+            pool = conn.execute(
+                text("SELECT status, assigned_tenant_id FROM phone_number_pool WHERE number = :num"),
+                {"num": clean_num}
+            ).fetchone()
+            already_mine = (owner and owner[0] in tenant_alias_ids(tenant_id)) or (pool and pool[1] in tenant_alias_ids(tenant_id))
+            if not already_mine and (owner or not pool or pool[0] != "available"):
+                raise HTTPException(status_code=409, detail="This number is not available for assignment.")
 
         # 1. Bind in tenant_phone_numbers
         conn.execute(
@@ -883,7 +1215,7 @@ async def assign_virtual_number(req: AssignNumberRequest):
                 VALUES (:num, :tid, :vendor, true)
                 ON CONFLICT (number) DO UPDATE SET tenant_id = :tid, vendor = :vendor, is_active = true
             """),
-            {"num": clean_num, "tid": req.tenant_id, "vendor": vendor}
+            {"num": clean_num, "tid": tenant_id, "vendor": vendor}
         )
 
         # 2. Update status in phone_number_pool
@@ -893,46 +1225,52 @@ async def assign_virtual_number(req: AssignNumberRequest):
                 VALUES (:num, :vendor, 'assigned', :tid)
                 ON CONFLICT (number) DO UPDATE SET status = 'assigned', assigned_tenant_id = :tid
             """),
-            {"num": clean_num, "vendor": vendor, "tid": req.tenant_id}
+            {"num": clean_num, "vendor": vendor, "tid": tenant_id}
         )
         conn.commit()
 
     clear_did_cache(clean_num)
-    _TENANT_CONFIG_CACHE.pop(req.tenant_id, None)
+    _TENANT_CONFIG_CACHE.pop(tenant_id, None)
 
     return {
         "status": "success",
-        "message": f"Virtual DID {clean_num} successfully assigned to '{t_check[1]}' ({req.tenant_id}).",
+        "message": f"Virtual DID {clean_num} successfully assigned to '{t_check[1]}' ({tenant_id}).",
         "assigned_number": clean_num,
-        "tenant_id": req.tenant_id
+        "tenant_id": tenant_id
     }
 
 
 @tenant_guard.post("/unassign-number")
-async def unassign_virtual_number(req: UnassignNumberRequest):
+def unassign_virtual_number(req: UnassignNumberRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """
     Unbinds a phone number from a tenant and returns it to the available inventory pool.
     """
     clean_num = req.phone_number.replace(" ", "").replace("-", "").strip()
     if not clean_num.startswith("+") and len(clean_num) == 10 and clean_num.isdigit():
         clean_num = "+91" + clean_num
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
 
     with sync_engine.connect() as conn:
-        # Deactivate / delete from tenant_phone_numbers
-        conn.execute(
+        # Deactivate / delete from tenant_phone_numbers (only this tenant's binding)
+        res = conn.execute(
             text("DELETE FROM tenant_phone_numbers WHERE (number = :num OR number = :raw) AND tenant_id = :tid"),
-            {"num": clean_num, "raw": clean_num.lstrip("+"), "tid": req.tenant_id}
+            {"num": clean_num, "raw": clean_num.lstrip("+"), "tid": tenant_id}
         )
-        # Release back to available pool
-        conn.execute(
-            text("UPDATE phone_number_pool SET status = 'available', assigned_tenant_id = NULL WHERE number = :num OR number = :raw"),
-            {"num": clean_num, "raw": clean_num.lstrip("+")}
+        # Release back to available pool only if this tenant held it
+        pool_res = conn.execute(
+            text("""
+                UPDATE phone_number_pool SET status = 'available', assigned_tenant_id = NULL
+                WHERE (number = :num OR number = :raw) AND assigned_tenant_id = :tid
+            """),
+            {"num": clean_num, "raw": clean_num.lstrip("+"), "tid": tenant_id}
         )
+        if res.rowcount == 0 and pool_res.rowcount == 0:
+            raise HTTPException(status_code=404, detail="This number is not assigned to your workspace.")
         conn.commit()
 
     from app.core.tenant_service import clear_did_cache
     clear_did_cache(clean_num)
-    _TENANT_CONFIG_CACHE.pop(req.tenant_id, None)
+    _TENANT_CONFIG_CACHE.pop(tenant_id, None)
 
     return {
         "status": "success",
@@ -944,12 +1282,14 @@ async def unassign_virtual_number(req: UnassignNumberRequest):
 # 4B. Multi-Agent & DID Routing Management (Department AI Agents)
 # -----------------------------------------------------------------------------
 @tenant_guard.get("/{tenant_id}/agents")
-async def get_tenant_agents(tenant_id: str):
+def get_tenant_agents(tenant_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to view agents for this tenant.")
     """Retrieves all registered AI Agents for a tenant."""
     with sync_engine.connect() as conn:
         t_row = conn.execute(
             text("SELECT tenant_id, business_name FROM tenants WHERE tenant_id = :tid OR tenant_id = :canon LIMIT 1"),
-            {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+            {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
         ).fetchone()
         actual_tid = t_row[0] if t_row else tenant_id
 
@@ -963,7 +1303,7 @@ async def get_tenant_agents(tenant_id: str):
                 WHERE (a.tenant_id = :tid OR a.tenant_id = :canon) AND a.is_active = true
                 ORDER BY a.is_default DESC, a.created_at ASC
             """),
-            {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).fetchall()
 
         agents = [
@@ -988,13 +1328,15 @@ async def get_tenant_agents(tenant_id: str):
 
 
 @tenant_guard.post("/{tenant_id}/agents")
-async def create_tenant_agent(tenant_id: str, req: AgentCreateRequest):
+def create_tenant_agent(tenant_id: str, req: AgentCreateRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to create agents for this tenant.")
     """Creates a new AI counselor/agent for the tenant."""
     agent_id = f"ag_{uuid.uuid4().hex[:10]}"
     with sync_engine.connect() as conn:
         t_row = conn.execute(
             text("SELECT tenant_id FROM tenants WHERE tenant_id = :tid OR tenant_id = :canon LIMIT 1"),
-            {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+            {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
         ).fetchone()
         if not t_row:
             raise HTTPException(status_code=404, detail="Tenant not found.")
@@ -1003,7 +1345,7 @@ async def create_tenant_agent(tenant_id: str, req: AgentCreateRequest):
         if req.is_default:
             conn.execute(
                 text("UPDATE agents SET is_default = false WHERE tenant_id = :tid OR tenant_id = :canon"),
-                {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+                {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
             )
 
         conn.execute(
@@ -1018,7 +1360,7 @@ async def create_tenant_agent(tenant_id: str, req: AgentCreateRequest):
                 "role": req.role_title.strip() or "Counselor",
                 "persona": req.persona.strip(),
                 "greeting": req.greeting.strip(),
-                "esc": req.escalation_number.strip() if req.escalation_number else None,
+                "esc": _validate_escalation_number(req.escalation_number),
                 "voice": req.voice_id or "default",
                 "lang": req.language or "hi-IN",
                 "is_def": bool(req.is_default)
@@ -1040,7 +1382,7 @@ async def create_tenant_agent(tenant_id: str, req: AgentCreateRequest):
                     "with_plus": "+" + clean_did.lstrip("+"),
                     "without_plus": clean_did.lstrip("+"),
                     "tid": actual_tid,
-                    "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid
+                    "canon": tenant_canonical_alias(actual_tid)
                 }
             )
             clear_did_cache(clean_did)
@@ -1058,12 +1400,14 @@ async def create_tenant_agent(tenant_id: str, req: AgentCreateRequest):
 
 
 @tenant_guard.put("/{tenant_id}/agents/{agent_id}")
-async def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateRequest):
+def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to update agents for this tenant.")
     """Updates an existing AI counselor/agent."""
     with sync_engine.connect() as conn:
         t_row = conn.execute(
             text("SELECT tenant_id FROM tenants WHERE tenant_id = :tid OR tenant_id = :canon LIMIT 1"),
-            {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+            {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
         ).fetchone()
         if not t_row:
             raise HTTPException(status_code=404, detail="Tenant not found.")
@@ -1071,7 +1415,7 @@ async def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateReq
 
         ag = conn.execute(
             text("SELECT agent_id FROM agents WHERE agent_id = :aid AND (tenant_id = :tid OR tenant_id = :canon) LIMIT 1"),
-            {"aid": agent_id, "tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"aid": agent_id, "tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).fetchone()
         if not ag:
             raise HTTPException(status_code=404, detail="Agent not found.")
@@ -1079,7 +1423,7 @@ async def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateReq
         if req.is_default:
             conn.execute(
                 text("UPDATE agents SET is_default = false WHERE tenant_id = :tid OR tenant_id = :canon"),
-                {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+                {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
             )
 
         updates = []
@@ -1098,7 +1442,7 @@ async def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateReq
             params["greeting"] = req.greeting.strip()
         if req.escalation_number is not None:
             updates.append("escalation_number = :esc")
-            params["esc"] = req.escalation_number.strip() if req.escalation_number else None
+            params["esc"] = _validate_escalation_number(req.escalation_number)
         if req.voice_id is not None:
             updates.append("voice_id = :voice")
             params["voice"] = req.voice_id
@@ -1121,19 +1465,30 @@ async def update_tenant_agent(tenant_id: str, agent_id: str, req: AgentUpdateReq
 
 
 @tenant_guard.delete("/{tenant_id}/agents/{agent_id}")
-async def delete_tenant_agent(tenant_id: str, agent_id: str):
+def delete_tenant_agent(tenant_id: str, agent_id: str, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    if not verify_tenant_access(tenant_id, auth):
+        raise HTTPException(status_code=403, detail="Forbidden: You do not have permission to delete agents for this tenant.")
     """Deletes an agent (if not assigned to an active DID or only remaining agent)."""
     with sync_engine.connect() as conn:
         t_row = conn.execute(
             text("SELECT tenant_id FROM tenants WHERE tenant_id = :tid OR tenant_id = :canon LIMIT 1"),
-            {"tid": tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in tenant_id else tenant_id}
+            {"tid": tenant_id, "canon": tenant_canonical_alias(tenant_id)}
         ).fetchone()
-        actual_tid = t_row[0] if t_row else tenant_id
+        if not t_row:
+            raise HTTPException(status_code=404, detail="Tenant not found.")
+        actual_tid = t_row[0]
+
+        owned = conn.execute(
+            text("SELECT 1 FROM agents WHERE agent_id = :aid AND (tenant_id = :tid OR tenant_id = :canon)"),
+            {"aid": agent_id, "tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
+        ).fetchone()
+        if not owned:
+            raise HTTPException(status_code=404, detail="Agent not found.")
 
         # Check total agents
         total = conn.execute(
             text("SELECT COUNT(*) FROM agents WHERE (tenant_id = :tid OR tenant_id = :canon) AND is_active = true"),
-            {"tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).scalar() or 0
         if total <= 1:
             raise HTTPException(status_code=400, detail="Cannot delete the only remaining counselor for this business.")
@@ -1147,7 +1502,10 @@ async def delete_tenant_agent(tenant_id: str, agent_id: str):
             dids_str = ", ".join(r[0] for r in assigned)
             raise HTTPException(status_code=400, detail=f"Cannot delete counselor while actively assigned to DID(s): {dids_str}. Reassign the DID first.")
 
-        conn.execute(text("DELETE FROM agents WHERE agent_id = :aid"), {"aid": agent_id})
+        conn.execute(
+            text("DELETE FROM agents WHERE agent_id = :aid AND (tenant_id = :tid OR tenant_id = :canon)"),
+            {"aid": agent_id, "tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
+        )
         conn.commit()
 
     clear_agent_cache(agent_id)
@@ -1155,16 +1513,17 @@ async def delete_tenant_agent(tenant_id: str, agent_id: str):
 
 
 @tenant_guard.post("/assign-agent-to-did")
-async def assign_agent_to_did(req: AssignAgentToDIDRequest):
+def assign_agent_to_did(req: AssignAgentToDIDRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """
     Assigns / Switches the active counselor for a specific DID number on demand.
     Flushes cache immediately for sub-millisecond instant switch.
     """
     clean_num = req.phone_number.replace(" ", "").replace("-", "").strip()
+    scoped_tid = resolve_tenant_scope(auth, req.tenant_id)
     with sync_engine.connect() as conn:
         t_row = conn.execute(
             text("SELECT tenant_id, business_name FROM tenants WHERE tenant_id = :tid OR tenant_id = :canon LIMIT 1"),
-            {"tid": req.tenant_id, "canon": "cl_idigitalstudie_82d5" if "idigital" in req.tenant_id else req.tenant_id}
+            {"tid": scoped_tid, "canon": tenant_canonical_alias(scoped_tid)}
         ).fetchone()
         if not t_row:
             raise HTTPException(status_code=404, detail="Tenant not found.")
@@ -1172,7 +1531,7 @@ async def assign_agent_to_did(req: AssignAgentToDIDRequest):
 
         ag = conn.execute(
             text("SELECT agent_id, name, role_title, greeting FROM agents WHERE agent_id = :aid AND (tenant_id = :tid OR tenant_id = :canon) LIMIT 1"),
-            {"aid": req.agent_id, "tid": actual_tid, "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid}
+            {"aid": req.agent_id, "tid": actual_tid, "canon": tenant_canonical_alias(actual_tid)}
         ).fetchone()
         if not ag:
             raise HTTPException(status_code=404, detail=f"Counselor '{req.agent_id}' not found for tenant '{actual_tid}'.")
@@ -1190,7 +1549,7 @@ async def assign_agent_to_did(req: AssignAgentToDIDRequest):
                 "with_plus": "+" + clean_num.lstrip("+"),
                 "without_plus": clean_num.lstrip("+"),
                 "tid": actual_tid,
-                "canon": "cl_idigitalstudie_82d5" if "idigital" in actual_tid else actual_tid
+                "canon": tenant_canonical_alias(actual_tid)
             }
         )
         conn.commit()
@@ -1213,11 +1572,12 @@ async def assign_agent_to_did(req: AssignAgentToDIDRequest):
 # 5. Interactive README & Integration Guide
 # -----------------------------------------------------------------------------
 @tenant_guard.get("/readme")
-async def get_tenant_readme(tenant_id: str = "idigitalstudies"):
+def get_tenant_readme(tenant_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """
     Returns custom, tailored integration documentation, call flow instructions,
     and webhook endpoints for this specific vendor.
     """
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
     base_url = settings.BASE_URL.rstrip("/")
     parsed = urlparse(base_url)
     ws_domain = parsed.netloc or "your-domain.com"
@@ -1276,7 +1636,9 @@ async def get_tenant_readme(tenant_id: str = "idigitalstudies"):
 # 6. Leads & Customer Status Management (CRM Board)
 # -----------------------------------------------------------------------------
 @tenant_guard.get("/leads")
-async def get_tenant_leads(tenant_id: str = "idigitalstudies"):
+def get_tenant_leads(tenant_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
+    tenant_id = resolve_tenant_scope(auth, tenant_id)
+    tids = tenant_alias_ids(tenant_id)
     """
     Retrieves all captured leads, status pipeline, and urgent callbacks for this vendor.
     Continuously auto-syncs inbound calls from callers into qualified sales pipeline leads.
@@ -1284,22 +1646,17 @@ async def get_tenant_leads(tenant_id: str = "idigitalstudies"):
     with sync_engine.connect() as conn:
         # 1. Continuous auto-sync: find any inbound calls with phone numbers not yet in leads
         calls_to_sync = conn.execute(
-            text("""
+            _alias_query("""
                 SELECT call_id, tenant_id, caller_number, summary, primary_concern, caller_sentiment, start_time, duration, outcome_tag, action_required
                 FROM calls
-                WHERE (tenant_id = :tid OR tenant_id IN (
-                    SELECT t2.tenant_id FROM tenants t2 
-                    WHERE REPLACE(LOWER(t2.business_name), ' ', '') = (
-                        SELECT REPLACE(LOWER(t1.business_name), ' ', '') FROM tenants t1 WHERE t1.tenant_id = :tid LIMIT 1
-                    )
-                ))
+                WHERE tenant_id IN :tids
                 AND caller_number IS NOT NULL 
                 AND caller_number NOT IN ('', 'unknown', 'anonymous', 'web-simulator')
                 AND call_id NOT IN (SELECT COALESCE(call_id, '') FROM leads WHERE call_id IS NOT NULL)
                 ORDER BY start_time DESC
                 LIMIT 100
             """),
-            {"tid": tenant_id}
+            {"tids": tids}
         ).fetchall()
 
         for c in calls_to_sync:
@@ -1359,20 +1716,14 @@ async def get_tenant_leads(tenant_id: str = "idigitalstudies"):
 
         # 2. Retrieve all leads for this tenant / alias
         existing_rows = conn.execute(
-            text("""
+            _alias_query("""
                 SELECT lead_id, call_id, name, phone, reason, captured_at, COALESCE(status, 'hot') as status
                 FROM leads 
-                WHERE tenant_id = :tid 
-                   OR tenant_id IN (
-                       SELECT t2.tenant_id FROM tenants t2 
-                       WHERE REPLACE(LOWER(t2.business_name), ' ', '') = (
-                           SELECT REPLACE(LOWER(t1.business_name), ' ', '') FROM tenants t1 WHERE t1.tenant_id = :tid LIMIT 1
-                       )
-                   )
+                WHERE tenant_id IN :tids
                 ORDER BY captured_at DESC NULLS LAST
                 LIMIT 100
             """),
-            {"tid": tenant_id}
+            {"tids": tids}
         ).fetchall()
 
     leads = []
@@ -1412,7 +1763,7 @@ async def get_tenant_leads(tenant_id: str = "idigitalstudies"):
 
 
 @tenant_guard.post("/leads/{lead_id}/status")
-async def update_lead_status(lead_id: str, req: LeadStatusUpdateRequest):
+def update_lead_status(lead_id: str, req: LeadStatusUpdateRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Updates the qualification / sales status of a lead."""
     valid_statuses = ("hot", "warm", "cold", "callback", "converted")
     st = req.status.lower().strip()
@@ -1420,6 +1771,9 @@ async def update_lead_status(lead_id: str, req: LeadStatusUpdateRequest):
         raise HTTPException(status_code=400, detail=f"Invalid status '{req.status}'. Must be one of: {', '.join(valid_statuses)}")
 
     with sync_engine.connect() as conn:
+        lead_row = conn.execute(text("SELECT tenant_id FROM leads WHERE lead_id = :lid"), {"lid": lead_id}).fetchone()
+        if not lead_row or not verify_tenant_access(lead_row[0], auth):
+            raise HTTPException(status_code=404, detail="Lead not found.")
         res = conn.execute(
             text("UPDATE leads SET status = :st WHERE lead_id = :lid"),
             {"st": st, "lid": lead_id}
@@ -1437,10 +1791,13 @@ async def update_lead_status(lead_id: str, req: LeadStatusUpdateRequest):
 
 
 @tenant_guard.post("/leads")
-async def create_tenant_lead(req: LeadCreateRequest):
+def create_tenant_lead(req: LeadCreateRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Manually creates a lead in the tenant CRM."""
     if not req.phone or not req.phone.strip():
         raise HTTPException(status_code=400, detail="Phone number is required.")
+    tenant_id = resolve_tenant_scope(auth, req.tenant_id)
+    if (req.status or "hot").lower().strip() not in ("hot", "warm", "cold", "callback", "converted"):
+        raise HTTPException(status_code=400, detail="Invalid lead status.")
 
     lid = uuid.uuid4().hex
     st = (req.status or "hot").lower().strip()
@@ -1452,7 +1809,7 @@ async def create_tenant_lead(req: LeadCreateRequest):
             """),
             {
                 "lid": lid,
-                "tid": req.tenant_id,
+                "tid": tenant_id,
                 "name": req.name or "Inbound Lead",
                 "phone": req.phone.strip(),
                 "reason": req.reason or "Manual CRM lead entry",
