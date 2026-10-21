@@ -633,13 +633,20 @@ async def get_widget_config(tenant_id: str):
 
 
 @router.post("/send-brochure")
-async def send_brochure_api(req: BrochureDispatchRequest, request: Request):
+async def send_brochure_api(
+    req: BrochureDispatchRequest,
+    request: Request,
+    auth: Optional[Dict[str, Any]] = Depends(get_optional_tenant_auth)
+):
     """
     Direct endpoint to dispatch brochure via WhatsApp or Email.
     Powers website chat buttons, interactive forms, and CRM automations.
     Rate-limited per visitor and per destination so it can't be used as a spam relay.
+    Authenticated portal/CRM staff are exempted from visitor IP rate limits.
     """
-    rate_limit_request(request, "send_brochure", limit=5, window_seconds=3600)
+    is_staff = bool(auth and (auth.get("is_admin") or auth.get("tenant_id") or auth.get("reseller_id")))
+    if not is_staff:
+        rate_limit_request(request, "send_brochure", limit=5, window_seconds=3600)
     tenant_id = normalize_tenant_id(req.tenant_id)
     ch = req.channel.lower().strip()
 

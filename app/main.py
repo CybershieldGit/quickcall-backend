@@ -14,7 +14,7 @@ from app.core.auth import get_current_admin
 from app.api import api_router
 from app.api.v1.chat import chat_router
 from app.api.v1.simulator import simulator
-from app.api.v1.telephony import outbound
+from app.api.v1.telephony import outbound, exotel_voice
 from app.api.v1.portals import tenant_portal, admin_portal, reseller_portal
 
 logger = logging.getLogger("qwickcall.main")
@@ -205,9 +205,14 @@ app.include_router(api_router)
 
 # Legacy alias endpoints for backward compatibility
 app.post("/api/v1/simulator/turn", tags=["Web Simulator"])(simulator.text_turn)
+app.api_route("/api/v1/simulator/preview-tts", methods=["GET", "POST"], tags=["Web Simulator"])(simulator.preview_tts_audio)
 app.post("/api/v1/outbound/make-call", tags=["Outbound Calls"])(outbound.make_outbound_call)
 app.post("/api/chat", tags=["Chat Agent"])(chat_router.send_chat_message)
 app.post("/api/chat/message", tags=["Chat Agent"])(chat_router.send_chat_message)
+app.api_route("/api/v1/voicebot-connect", methods=["GET", "POST"], tags=["Exotel Voice Webhooks"])(exotel_voice.voicebot_dynamic_connect)
+app.api_route("/voicebot-connect", methods=["GET", "POST"], tags=["Exotel Voice Webhooks"])(exotel_voice.voicebot_dynamic_connect)
+app.api_route("/api/v1/passthru", methods=["GET", "POST"], tags=["Exotel Voice Webhooks"])(exotel_voice.exotel_passthru)
+app.api_route("/passthru", methods=["GET", "POST"], tags=["Exotel Voice Webhooks"])(exotel_voice.exotel_passthru)
 
 # Direct login POST aliases for separate portal endpoints
 app.post("/tenant/login", tags=["Tenant SaaS Portal"])(tenant_portal.login_tenant)

@@ -1,4 +1,6 @@
 import os
+import time
+from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, HTTPException, Depends, Query
 from urllib.parse import quote
@@ -181,9 +183,48 @@ async def make_outbound_call(
         detail=f"No active telephony gateway available. Asterisk client is not registered ({settings.RPDIGITAL_ASTERISK_HOST}) and Exotel credentials are not configured."
     )
 
-@router.get("/recent")
 @router.get("/active-calls")
 async def get_active_calls(
+    tenant_id: Optional[str] = Query(None, description="Optional tenant ID to filter call logs"),
+    auth: Dict[str, Any] = Depends(get_current_tenant_auth)
+):
+    """Returns currently in-flight live calls from session memory."""
+    from app.core.session_store import DISTRIBUTED_SESSIONS
+    requested = tenant_id.strip() if tenant_id and tenant_id.strip() else None
+    is_admin = bool(auth.get("is_admin"))
+    target_tid = resolve_tenant_scope(auth, requested) if (requested or not is_admin) else None
+
+    active_list = []
+    now = time.time()
+    for cid, sess in list(DISTRIBUTED_SESSIONS.items()):
+        if not isinstance(sess, dict):
+            continue
+        state = sess.get("state")
+        if state in ("COMPLETED", "FAILED", "DISCONNECTED"):
+            continue
+        sess_tid = sess.get("tenant_id")
+        if target_tid and sess_tid and sess_tid not in tenant_alias_ids(target_tid):
+            continue
+        created_at = sess.get("created_at") or now
+        dur = max(0.0, round(now - created_at, 1))
+        active_list.append({
+            "call_id": cid,
+            "caller_number": sess.get("caller_phone") or sess.get("caller_number") or "Active Caller",
+            "agent_name": sess.get("advisor_name") or "Aanya",
+            "direction": sess.get("direction", "inbound"),
+            "duration_seconds": dur,
+            "billable_minutes": round(dur / 60.0, 2),
+            "cost_inr": round((dur / 60.0) * float(sess.get("rate_per_min", 5.0)), 2),
+            "outcome": "in_progress",
+            "sentiment": "neutral",
+            "started_at": str(datetime.fromtimestamp(created_at, timezone.utc)) if isinstance(created_at, (int, float)) else str(created_at),
+            "status": "live"
+        })
+    return {"calls": active_list, "total_active": len(active_list)}
+
+
+@router.get("/recent")
+async def get_recent_calls(
     tenant_id: Optional[str] = Query(None, description="Optional tenant ID to filter call logs"),
     auth: Dict[str, Any] = Depends(get_current_tenant_auth),
     db: AsyncSession = Depends(get_db)

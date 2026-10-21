@@ -595,8 +595,12 @@ async def stream_synthesize_pcm(text: str, target_sample_rate: int = 8000, langu
 
     # 0. Check in-memory audio chunk cache (0ms latency, 0 API cost)
     if cache_key in _AUDIO_CHUNK_CACHE:
-        _AUDIO_CHUNK_CACHE.move_to_end(cache_key)
-        for chunk in _AUDIO_CHUNK_CACHE[cache_key]:
+        cached_chunks = list(_AUDIO_CHUNK_CACHE.get(cache_key) or [])
+        try:
+            _AUDIO_CHUNK_CACHE.move_to_end(cache_key)
+        except Exception:
+            pass
+        for chunk in cached_chunks:
             yield chunk
         return
 
@@ -887,11 +891,11 @@ async def _generate_edge_tts_speech(text: str, voice_name: str) -> bytes:
     return bytes(audio_data)
 
 
-async def _generate_deepgram_speech(text: str) -> Optional[bytes]:
+async def _generate_deepgram_speech(text: str, model: Optional[str] = None) -> Optional[bytes]:
     """Generates MP3 audio using Deepgram Aura TTS for testing endpoints."""
     if not settings.DEEPGRAM_API_KEY:
         return None
-    voice_model = getattr(settings, "DEEPGRAM_VOICE_MODEL", "aura-asteria-en")
+    voice_model = model or getattr(settings, "DEEPGRAM_VOICE_MODEL", "aura-asteria-en")
     url = f"https://api.deepgram.com/v1/speak?model={voice_model}"
     headers = {
         "Authorization": f"Token {settings.DEEPGRAM_API_KEY}",
@@ -912,7 +916,84 @@ def set_runtime_tts_engine(engine_name: str) -> str:
     if normalized in ("deepgram", "sarvam", "edge-tts", "elevenlabs"):
         settings.TTS_ENGINE = normalized
         _AUDIO_CHUNK_CACHE.clear()
+        if settings.REDIS_URL:
+            try:
+                from app.core.session_store import _get_sync_redis
+                r = _get_sync_redis()
+                if r:
+                    r.set("platform:tts_engine", normalized)
+            except Exception:
+                pass
         print(f"🔄 Switched runtime TTS Engine to: {settings.TTS_ENGINE} (cache cleared)")
         return settings.TTS_ENGINE
     raise ValueError(f"Unsupported TTS engine: {engine_name}")
+
+
+def _generate_fallback_silence_wav() -> bytes:
+    import struct
+    sample_rate = 8000
+    num_samples = sample_rate
+    byte_rate = sample_rate * 2
+    data_size = num_samples * 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF", 36 + data_size, b"WAVE",
+        b"fmt ", 16, 1, 1, sample_rate, byte_rate, 2, 16,
+        b"data", data_size
+    )
+    return header + b"\x00" * data_size
+
+
+async def preview_voice_speech(
+    text: str,
+    voice_engine: Optional[str] = None,
+    voice_id: Optional[str] = None,
+    language: Optional[str] = None
+) -> bytes:
+    """Generates speech specifically formatted for audio preview in browser."""
+    clean_text = clean_text_for_speech(text) or "Hello! I am your AI conversational agent."
+    eng = (voice_engine or getattr(settings, "TTS_ENGINE", "sarvam")).lower().strip()
+    
+    # 1. Try Sarvam if requested or configured
+    if (eng == "sarvam" or not settings.DEEPGRAM_API_KEY) and getattr(settings, "SARVAM_API_KEY", None):
+        speaker = (voice_id or "ritu").replace("bulbul:", "").strip()
+        try:
+            audio = await _generate_sarvam_speech(clean_text, speaker=speaker, language_code=language or "hi-IN")
+            if audio:
+                return audio
+        except Exception as e:
+            print(f"[TTS Preview] Sarvam error: {e}")
+            
+    # 2. Try Deepgram Aura
+    if settings.DEEPGRAM_API_KEY:
+        dg_model = voice_id if (voice_id and "aura" in voice_id) else "aura-asteria-en"
+        try:
+            audio = await _generate_deepgram_speech(clean_text, model=dg_model)
+            if audio:
+                return audio
+        except Exception as e:
+            print(f"[TTS Preview] Deepgram error: {e}")
+
+    # 3. Try ElevenLabs
+    if getattr(settings, "ELEVENLABS_API_KEY", None):
+        try:
+            audio = await _generate_elevenlabs_speech(clean_text)
+            if audio:
+                return audio
+        except Exception as e:
+            print(f"[TTS Preview] ElevenLabs error: {e}")
+
+    # 4. Try Edge-TTS
+    try:
+        selected_voice = "hi-IN-SwaraNeural" if (language and "hi" in language) else "en-IN-NeerjaNeural"
+        audio = await _generate_edge_tts_speech(clean_text, selected_voice)
+        if audio:
+            return audio
+    except Exception as e:
+        print(f"[TTS Preview] Edge-TTS error: {e}")
+
+    # 5. Return fallback silent WAV so client player never breaks
+    return _generate_fallback_silence_wav()
+
+
 

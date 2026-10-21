@@ -462,13 +462,15 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
         except asyncio.CancelledError:
             pass
 
+    max_call_sec: float = float(settings.MAX_CALL_DURATION_SECONDS)
+
     # Main WebSocket Loop
     try:
         while True:
             message = await websocket.receive_text()
-            if time.perf_counter() - sip_call_start > settings.MAX_CALL_DURATION_SECONDS:
-                print(f"[SIPStream] ⏱️ Call {call_id} hit MAX_CALL_DURATION_SECONDS; hanging up.")
-                await websocket.close(code=1000, reason="Maximum call duration reached")
+            if time.perf_counter() - sip_call_start > max_call_sec:
+                print(f"[SIPStream] ⏱️ Call {call_id} hit prepaid balance/duration limit ({max_call_sec}s); hanging up.")
+                await websocket.close(code=1000, reason="Prepaid balance or duration limit reached")
                 break
             try:
                 data = json.loads(message)
@@ -510,7 +512,10 @@ async def sip_webrtc_stream_handler(websocket: WebSocket):
                     print(f"[SIPStream] 🛑 Inbound SIP call rejected for {tenant_id}: {bal_msg}")
                     rejection_msg = "Kshama kijiye, is line par baat karne ke liye paryapt credit uplabdh nahi hai. Kripya apne administrator se sampark karein."
                     playback_task = asyncio.create_task(speak_text(rejection_msg, is_final=True))
-                    continue
+                    break
+
+                # Dynamic maximum duration bounded by prepaid balance (assuming max retail rate ~₹5/min)
+                max_call_sec = min(float(settings.MAX_CALL_DURATION_SECONDS), max(60.0, (curr_bal / 5.0) * 60.0))
 
                 agent = VoiceAgent(call_id=call_id, tenant_id=tenant_id, caller_number=caller_phone, agent_id=agent_id)
                 # Pre-warm tenant knowledge in RAM so Turn 1 has 0ms lookup latency

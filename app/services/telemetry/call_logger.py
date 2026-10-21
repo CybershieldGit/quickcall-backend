@@ -276,14 +276,14 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
                                 reseller_profit = round(max(0.0, client_charge - reseller_cost), 2)
                                 owner_profit = round(max(0.0, reseller_cost - (billable_mins * base_cost_rate)), 2)
 
-                                # Deduct from client wallet
+                                # Deduct from client wallet (allow negative to track unpaid debt)
                                 conn.execute(
-                                    text("UPDATE tenants SET wallet_balance = CASE WHEN (wallet_balance - :chg) > 0 THEN (wallet_balance - :chg) ELSE 0.0 END WHERE tenant_id = :tid"),
+                                    text("UPDATE tenants SET wallet_balance = (wallet_balance - :chg) WHERE tenant_id = :tid"),
                                     {"chg": client_charge, "tid": tenant_id}
                                 )
                                 # Deduct wholesale cost from reseller wallet
                                 conn.execute(
-                                    text("UPDATE resellers SET wallet_balance = CASE WHEN (wallet_balance - :cst) > 0 THEN (wallet_balance - :cst) ELSE 0.0 END WHERE reseller_id = :rid"),
+                                    text("UPDATE resellers SET wallet_balance = (wallet_balance - :cst) WHERE reseller_id = :rid"),
                                     {"cst": reseller_cost, "rid": reseller_id}
                                 )
                             else:
@@ -292,9 +292,9 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
                                 reseller_profit = 0.0
                                 owner_profit = round(max(0.0, client_charge - (billable_mins * base_cost_rate)), 2)
 
-                                # Deduct from client wallet
+                                # Deduct from client wallet (allow negative to track unpaid debt)
                                 conn.execute(
-                                    text("UPDATE tenants SET wallet_balance = CASE WHEN (wallet_balance - :chg) > 0 THEN (wallet_balance - :chg) ELSE 0.0 END WHERE tenant_id = :tid"),
+                                    text("UPDATE tenants SET wallet_balance = (wallet_balance - :chg) WHERE tenant_id = :tid"),
                                     {"chg": client_charge, "tid": tenant_id}
                                 )
 

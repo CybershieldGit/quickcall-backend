@@ -70,6 +70,8 @@ import concurrent.futures
 # Dedicated background executor for non-blocking Redis session persistence
 _SESSION_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="redis_session_saver")
 
+import copy
+
 def save_session(call_id: str, data: Dict[str, Any], ttl: int = 3600) -> bool:
     """Save session data instantly to local memory and persist to Redis in background."""
     if not call_id:
@@ -78,17 +80,18 @@ def save_session(call_id: str, data: Dict[str, Any], ttl: int = 3600) -> bool:
     _MEM_SESSIONS[call_id] = data
     _MEM_SESSIONS_EXPIRY[call_id] = time.time() + ttl
     if settings.REDIS_URL:
-        def _bg_save():
+        frozen_data = copy.deepcopy(data)
+        def _bg_save(payload):
             global _SYNC_REDIS
             try:
                 r = _get_sync_redis()
                 if r:
-                    r.setex(_make_key(call_id), ttl, json.dumps(data, default=str))
+                    r.setex(_make_key(call_id), ttl, json.dumps(payload, default=str))
             except Exception as e:
                 _SYNC_REDIS = None
                 print(f"[SessionStore] Error in background Redis save: {e}")
         try:
-            _SESSION_EXECUTOR.submit(_bg_save)
+            _SESSION_EXECUTOR.submit(_bg_save, frozen_data)
         except Exception:
             pass
     return True

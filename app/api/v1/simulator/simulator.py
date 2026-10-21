@@ -204,6 +204,29 @@ async def set_tts(
         raise HTTPException(status_code=400, detail=str(ve))
 
 
+@router.api_route("/preview-tts", methods=["GET", "POST"])
+async def preview_tts_audio(
+    text: str = Query("Hello! I am your AI counselor.", description="Text to synthesize for preview"),
+    voice_engine: Optional[str] = Query(None, description="sarvam, deepgram, or edgetts"),
+    voice_id: Optional[str] = Query(None, description="Voice speaker model ID"),
+    language: Optional[str] = Query("hi-IN", description="Language code")
+):
+    """Generates and streams audio bytes for agent voice preview in portal dashboards."""
+    from app.services.ai.tts_engine import preview_voice_speech
+    audio_bytes = await preview_voice_speech(
+        text=text,
+        voice_engine=voice_engine,
+        voice_id=voice_id,
+        language=language
+    )
+    if not audio_bytes:
+        raise HTTPException(status_code=500, detail="Could not synthesize preview audio.")
+    
+    media_type = "audio/mpeg" if audio_bytes.startswith(b"\xff\xfb") or audio_bytes.startswith(b"ID3") else "audio/wav"
+    return Response(content=audio_bytes, media_type=media_type)
+
+
+
 @router.get("/cache-questions")
 def get_cache_questions(tenant_id: Optional[str] = None, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
     """Returns all FAQ questions currently vector-cached and frequency-tracked in Redis."""

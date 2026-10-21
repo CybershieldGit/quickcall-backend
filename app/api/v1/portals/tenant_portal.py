@@ -146,11 +146,12 @@ class TenantRegisterRequest(BaseModel):
 
 class TelephonySettingsRequest(BaseModel):
     tenant_id: str
-    telephony_mode: str  # master_pool | byoc
+    telephony_mode: str  # master_pool | byoc | sip_trunk
     exotel_account_sid: Optional[str] = None
     exotel_api_key: Optional[str] = None
     exotel_api_token: Optional[str] = None
     exotel_caller_id: Optional[str] = None
+    escalation_number: Optional[str] = None
 
 
 class MessagingSettingsRequest(BaseModel):
@@ -682,10 +683,15 @@ def upload_team_pdf(
 # -----------------------------------------------------------------------------
 @tenant_guard.post("/telephony-settings")
 def update_telephony_settings(req: TelephonySettingsRequest, auth: Dict[str, Any] = Depends(get_current_tenant_auth)):
-    """Updates tenant's telephony mode (Master Pool or BYOC Exotel credentials)."""
+    """Updates tenant's telephony mode (Master Pool, BYOC Exotel, or Direct SIP Trunk) and escalation routing."""
     tenant_id = resolve_tenant_scope(auth, req.tenant_id)
-    if req.telephony_mode not in ("master_pool", "byoc"):
-        raise HTTPException(status_code=400, detail="telephony_mode must be 'master_pool' or 'byoc'.")
+    if req.telephony_mode not in ("master_pool", "byoc", "sip_trunk"):
+        raise HTTPException(status_code=400, detail="telephony_mode must be 'master_pool', 'byoc', or 'sip_trunk'.")
+    
+    valid_esc = None
+    if req.escalation_number:
+        valid_esc = _validate_escalation_number(req.escalation_number)
+
     with sync_engine.connect() as conn:
         conn.execute(
             text("""
@@ -701,11 +707,30 @@ def update_telephony_settings(req: TelephonySettingsRequest, auth: Dict[str, Any
                 "mode": req.telephony_mode,
                 "sid": req.exotel_account_sid,
                 "key": req.exotel_api_key,
-                "tok": encrypt_secret(req.exotel_api_token),
+                "tok": encrypt_secret(req.exotel_api_token) if req.exotel_api_token else None,
                 "cid": req.exotel_caller_id,
                 "tid": tenant_id
             }
         )
+        if valid_esc:
+            # Update escalation number in tenant_config
+            conn.execute(
+                text("""
+                    UPDATE tenant_config 
+                    SET escalation_number = :esc
+                    WHERE tenant_id IN :tids
+                """).bindparams(bindparam("tids", expanding=True)),
+                {"esc": valid_esc, "tids": tenant_alias_ids(tenant_id)}
+            )
+            # Update default active agent's escalation_number as well
+            conn.execute(
+                text("""
+                    UPDATE agents 
+                    SET escalation_number = :esc 
+                    WHERE tenant_id IN :tids AND (is_default = true OR is_active = true)
+                """).bindparams(bindparam("tids", expanding=True)),
+                {"esc": valid_esc, "tids": tenant_alias_ids(tenant_id)}
+            )
         conn.commit()
 
     from app.services.tenant.tenant_service import _TENANT_CREDENTIALS_CACHE
@@ -715,7 +740,8 @@ def update_telephony_settings(req: TelephonySettingsRequest, auth: Dict[str, Any
     return {
         "status": "success",
         "message": f"Telephony settings updated to '{req.telephony_mode}'.",
-        "telephony_mode": req.telephony_mode
+        "telephony_mode": req.telephony_mode,
+        "escalation_number": valid_esc
     }
 
 
@@ -817,18 +843,23 @@ async def test_tenant_smtp(req: TestSmtpRequest, auth: Dict[str, Any] = Depends(
     from app.services.messaging.brochure_service import send_email_message
     import json
 
-    with sync_engine.connect() as conn:
-        row = conn.execute(
-            text("SELECT business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
-            {"tid": tid}
-        ).fetchone()
-        rules = row[0] if row and isinstance(row[0], dict) else json.loads(row[0] or "{}") if (row and row[0]) else {}
-        smtp_cfg = rules.get("smtp") or {}
-        if not (smtp_cfg.get("host") and smtp_cfg.get("user") and smtp_cfg.get("password")):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Tenant '{tid}' has not configured custom SMTP credentials yet. Please fill in SMTP Host, Username, and App Password and click Save."
-            )
+    from starlette.concurrency import run_in_threadpool
+
+    def _fetch_rules():
+        with sync_engine.connect() as conn:
+            row = conn.execute(
+                text("SELECT business_rules FROM tenant_config WHERE tenant_id = :tid ORDER BY version DESC LIMIT 1"),
+                {"tid": tid}
+            ).fetchone()
+            return row[0] if row and isinstance(row[0], dict) else json.loads(row[0] or "{}") if (row and row[0]) else {}
+
+    rules = await run_in_threadpool(_fetch_rules)
+    smtp_cfg = rules.get("smtp") or {}
+    if not (smtp_cfg.get("host") and smtp_cfg.get("user") and smtp_cfg.get("password")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Tenant '{tid}' has not configured custom SMTP credentials yet. Please fill in SMTP Host, Username, and App Password and click Save."
+        )
 
     b_name = rules.get("sender_name") or "QwickCall Tenant"
     res = await send_email_message(

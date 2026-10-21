@@ -143,15 +143,18 @@ async def exotel_status_callback(
             if From and From.strip() and From.strip().lower() != "unknown":
                 from app.db.session import sync_engine
                 from sqlalchemy import text
-                try:
-                    with sync_engine.connect() as conn:
-                        conn.execute(
-                            text("UPDATE calls SET caller_number = :caller WHERE call_id = :cid AND (caller_number IS NULL OR caller_number = '' OR caller_number = 'unknown')"),
-                            {"caller": From.strip(), "cid": CallSid}
-                        )
-                        conn.commit()
-                except Exception as dbe:
-                    print(f"[ExotelStatus DB Update Error] {dbe}")
+                from app.services.telemetry.call_logger import submit_bg_db
+                def _update_caller():
+                    try:
+                        with sync_engine.connect() as conn:
+                            conn.execute(
+                                text("UPDATE calls SET caller_number = :caller WHERE call_id = :cid AND (caller_number IS NULL OR caller_number = '' OR caller_number = 'unknown')"),
+                                {"caller": From.strip(), "cid": CallSid}
+                            )
+                            conn.commit()
+                    except Exception as dbe:
+                        print(f"[ExotelStatus DB Update Error] {dbe}")
+                submit_bg_db(_update_caller)
 
             sess = SESSIONS.get(CallSid, {})
             was_transferred = sess.get("transfer_requested", False) or sess.get("transfer_accepted", False)

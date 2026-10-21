@@ -320,6 +320,14 @@ class AsteriskSipClient:
                         _log_sip(traceback.format_exc())
             finally:
                 rereg_task.cancel()
+                self.is_registered = False
+                for pc in list(self.calls.values()):
+                    try:
+                        asyncio.create_task(pc.close())
+                    except Exception:
+                        pass
+                self.calls.clear()
+                self._fastapi_bridges.clear()
 
     async def _handle_sip_message(self, raw_text: str):
         msg = SipMessage(raw_text)
