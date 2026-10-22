@@ -641,10 +641,7 @@ def get_tenant_brochure_url(tenant_id: str) -> str:
     if rules.get("brochure_url"):
         return rules["brochure_url"]
 
-    local_brochure = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-        "data", "brochures", f"{tid}_brochure.pdf"
-    )
+    local_brochure = os.path.join(settings.BROCHURES_DIR, f"{tid}_brochure.pdf")
     if os.path.exists(local_brochure):
         return f"/api/v1/tenant/brochure/{tid}"
 

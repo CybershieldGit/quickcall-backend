@@ -8,6 +8,7 @@ Handles:
 """
 import time
 import json
+import asyncio
 import hmac
 import base64
 import hashlib
@@ -161,7 +162,8 @@ async def _process_and_reply_whatsapp(
         # 5. Core RAG LLM Generation
         else:
             try:
-                reply = call_llm(sess, clean_msg)
+                # call_llm is blocking; this background task runs on the event loop serving live calls
+                reply = await asyncio.to_thread(call_llm, sess, clean_msg)
             except Exception as e:
                 logger.error(f"[WhatsApp LLM Error] {e}")
                 reply = f"Thank you for contacting {b_name}. How can I assist you with our training programs today?"

@@ -45,7 +45,10 @@ async def lifespan(app: FastAPI):
 
     print("🚀 Initializing Enterprise Voice Agent Platform...")
     if not settings.EXOTEL_WEBHOOK_TOKEN:
-        logger.warning("⚠️ EXOTEL_WEBHOOK_TOKEN is not set: Exotel webhooks and /media-stream accept unauthenticated traffic.")
+        if settings.IS_PRODUCTION:
+            logger.error("❌ EXOTEL_WEBHOOK_TOKEN is not set: all Exotel webhooks and /media-stream connections will be rejected.")
+        else:
+            logger.warning("⚠️ EXOTEL_WEBHOOK_TOKEN is not set: Exotel webhooks and /media-stream accept unauthenticated traffic.")
     if (settings.WHATSAPP_PROVIDER or "").lower() == "meta" and not settings.WHATSAPP_APP_SECRET:
         logger.warning("⚠️ WHATSAPP_APP_SECRET is not set: inbound Meta WhatsApp webhooks will be rejected.")
     if not settings.ADMIN_PASSWORD:

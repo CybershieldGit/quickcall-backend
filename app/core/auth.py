@@ -268,10 +268,10 @@ def resolve_tenant_scope(auth: Dict[str, Any], requested_tenant_id: Optional[str
 # 5. Telephony Webhook / Bridge Tokens
 # -----------------------------------------------------------------------------
 def verify_exotel_token(token: Optional[str]) -> bool:
-    """Checks the shared ?token= on Exotel webhooks/streams. Open only when EXOTEL_WEBHOOK_TOKEN is unset (startup warns)."""
+    """Checks the shared ?token= on Exotel webhooks/streams. Unset token: open in development, closed in production."""
     expected = settings.EXOTEL_WEBHOOK_TOKEN
     if not expected:
-        return True
+        return not settings.IS_PRODUCTION
     return bool(token) and hmac.compare_digest(token, expected)
 
 

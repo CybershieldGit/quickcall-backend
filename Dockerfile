@@ -27,12 +27,16 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Copy application files
 COPY app/ ./app/
 COPY scripts/ ./scripts/
+COPY static/ ./static/
 COPY make_call.py ./
 
 # Run as an unprivileged user; brochure uploads are written under /app/data
 RUN useradd --create-home --uid 10001 qwickcall && mkdir -p /app/data && chown -R qwickcall /app/data \
     && chmod -R a+rX /opt/hf-cache
 USER qwickcall
+
+# Uploaded brochures live here; mount a persistent volume (e.g. -v qwickcall-data:/app/data) or they are lost on redeploy
+VOLUME ["/app/data"]
 
 # Expose FastAPI server port
 EXPOSE 8001

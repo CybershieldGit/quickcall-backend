@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 from datetime import datetime, timezone
@@ -163,7 +164,8 @@ async def make_outbound_call(
     if settings.EXOTEL_ACCOUNT_SID and settings.EXOTEL_API_KEY and settings.EXOTEL_API_TOKEN:
         try:
             tenant_did = get_tenant_did(tenant_id, vendor="exotel") or settings.EXOTEL_CALLER_ID
-            call_info = trigger_exotel_outbound_call(target, tenant_id=tenant_id, caller_id=tenant_did)
+            # Sync HTTP (up to 10s); run off the event loop so live call audio isn't stalled
+            call_info = await asyncio.to_thread(trigger_exotel_outbound_call, target, tenant_id=tenant_id, caller_id=tenant_did)
             from_num = call_info.get("from") or tenant_did
             return {
                 "status": "success",

@@ -910,10 +910,8 @@ def upload_tenant_brochure(
     tid = _validate_tenant_id_format(resolve_tenant_scope(auth, tenant_id))
     content = _read_pdf_upload(file)
 
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    brochures_dir = os.path.join(base_dir, "data", "brochures")
-    os.makedirs(brochures_dir, exist_ok=True)
-    pdf_path = os.path.join(brochures_dir, f"{tid}_brochure.pdf")
+    os.makedirs(settings.BROCHURES_DIR, exist_ok=True)
+    pdf_path = os.path.join(settings.BROCHURES_DIR, f"{tid}_brochure.pdf")
 
     with open(pdf_path, "wb") as f:
         f.write(content)
@@ -964,9 +962,7 @@ def get_tenant_brochure(tenant_id: str):
     """
     import os, json
     tid = _validate_tenant_id_format(tenant_id)
-    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    brochures_dir = os.path.join(base_dir, "data", "brochures")
-    pdf_path = os.path.join(brochures_dir, f"{tid}_brochure.pdf")
+    pdf_path = os.path.join(settings.BROCHURES_DIR, f"{tid}_brochure.pdf")
 
     if os.path.exists(pdf_path):
         return FileResponse(

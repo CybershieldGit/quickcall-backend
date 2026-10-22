@@ -224,18 +224,30 @@ def log_call_end(call_id: str, outcome_tag: str, transferred: bool):
                             start_val = now
                     dur_sec = max(0.0, (now - start_val).total_seconds())
 
-                conn.execute(
+                # Atomic claim: several paths (stream close, Exotel status webhook, agent farewell) end the
+                # same call concurrently on different threads; only the one that sets end_time settles billing.
+                claim = conn.execute(
                     text("""
-                        UPDATE calls 
-                        SET end_time = :now, 
+                        UPDATE calls
+                        SET end_time = :now,
                             duration = :dur,
-                            outcome_tag = :tag, 
-                            transferred = :tr 
-                        WHERE call_id = :cid
+                            outcome_tag = :tag,
+                            transferred = :tr
+                        WHERE call_id = :cid AND end_time IS NULL
                     """),
                     {"now": now, "dur": dur_sec, "tag": outcome_tag, "tr": transferred, "cid": call_id}
                 )
                 conn.commit()
+
+                if claim.rowcount == 0:
+                    if transferred:
+                        conn.execute(
+                            text("UPDATE calls SET transferred = :tr, outcome_tag = :tag WHERE call_id = :cid"),
+                            {"tr": True, "tag": outcome_tag, "cid": call_id}
+                        )
+                        conn.commit()
+                    print(f"💰 [Billing Settle] Call {call_id} already ended/settled. Skipping duplicate wallet deduction.")
+                    return
 
                 # 2. Settle Call Billing & Margins (Idempotent: settle only once per call)
                 existing_tx = conn.execute(

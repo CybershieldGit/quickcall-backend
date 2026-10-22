@@ -56,6 +56,11 @@ class Settings:
 
     # Upload limits
     MAX_UPLOAD_BYTES: int = int(os.getenv("MAX_UPLOAD_BYTES", str(20 * 1024 * 1024)))
+    # Uploaded tenant brochures (<project>/data/brochures; /app/data is the writable volume in Docker)
+    BROCHURES_DIR: str = os.getenv(
+        "BROCHURES_DIR",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "brochures")
+    )
 
     # Verify the Asterisk WSS certificate (disable only for a self-signed lab PBX)
     RPDIGITAL_SIP_TLS_VERIFY: bool = os.getenv("RPDIGITAL_SIP_TLS_VERIFY", "true").lower() in ("true", "1", "yes")

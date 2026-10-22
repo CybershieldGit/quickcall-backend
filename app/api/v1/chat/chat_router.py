@@ -9,6 +9,7 @@ Supports:
 - Multi-tier LLM fallback: Groq -> Gemini Flash Lite -> RAM engine
 - Embeddable web chat widget configuration
 """
+import asyncio
 import uuid
 import time
 import json
@@ -199,6 +200,27 @@ def _get_or_create_chat_session(
     return sess
 
 
+def _allowed_brochure_destinations(message: str) -> tuple:
+    """
+    Extracts (phone, email) for a chat-triggered brochure send, dropping any destination over its
+    per-destination daily cap so the public chat bot can't be used as a WhatsApp/email spam relay.
+    """
+    def _allowed(dest: Optional[str]) -> bool:
+        if not dest:
+            return False
+        try:
+            enforce_rate_limit(f"send_brochure_dest:{dest.lower()}", limit=3, window_seconds=86400)
+            return True
+        except HTTPException:
+            return False
+
+    ph = extract_phone_number(message)
+    ph = ph if _allowed(ph) else None
+    em = extract_email_address(message) if not ph else None
+    em = em if _allowed(em) else None
+    return ph, em
+
+
 # -----------------------------------------------------------------------------
 # Endpoints
 # -----------------------------------------------------------------------------
@@ -313,13 +335,11 @@ async def send_chat_message(req: ChatMessageRequest, request: Request = None):
 
         # 3. Brochure / Syllabus Request Detection
         elif detect_brochure_intent(clean_msg):
-            ph = extract_phone_number(clean_msg)
-            em = extract_email_address(clean_msg)
+            ph, em = _allowed_brochure_destinations(clean_msg)
             rules = config.get("business_rules", {})
             b_url = get_tenant_brochure_url(tenant_id)
 
             if ph:
-                import asyncio
                 asyncio.create_task(
                     send_brochure(
                         tenant_id=tenant_id,
@@ -339,7 +359,6 @@ async def send_chat_message(req: ChatMessageRequest, request: Request = None):
                         f"Aap isse yahan direct download bhi kar sakte hain: {b_url}."
                     )
             elif em:
-                import asyncio
                 asyncio.create_task(
                     send_brochure(
                         tenant_id=tenant_id,
@@ -380,7 +399,8 @@ async def send_chat_message(req: ChatMessageRequest, request: Request = None):
             else:
                 # 4. Multi-tier LLM Generation with RAG grounding
                 try:
-                    reply = call_llm(sess, clean_msg)
+                    # call_llm is blocking (sync HTTP + embeddings); keep it off the event loop serving live calls
+                    reply = await asyncio.to_thread(call_llm, sess, clean_msg)
                 except Exception as el:
                     logger.warning(f"[Chat API] LLM generation warning: {el}")
                     reply = f"Ji, main {b_name} se bol rahi hoon. Kripya apna prashna dobara poochein."
@@ -464,13 +484,11 @@ async def stream_chat_message(req: ChatMessageRequest, request: Request):
 
         # Fast path 3: Brochure Request
         if detect_brochure_intent(clean_msg):
-            ph = extract_phone_number(clean_msg)
-            em = extract_email_address(clean_msg)
+            ph, em = _allowed_brochure_destinations(clean_msg)
             rules = config.get("business_rules", {})
             b_url = get_tenant_brochure_url(tenant_id)
 
             if ph:
-                import asyncio
                 asyncio.create_task(
                     send_brochure(
                         tenant_id=tenant_id,
@@ -487,7 +505,6 @@ async def stream_chat_message(req: ChatMessageRequest, request: Request):
                     f"Aap isse yahan direct download bhi kar sakte hain: {b_url}."
                 )
             elif em:
-                import asyncio
                 asyncio.create_task(
                     send_brochure(
                         tenant_id=tenant_id,
